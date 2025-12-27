@@ -96,6 +96,20 @@ public sealed class RunService
 
         _db.Runs.Add(run);
 
+        // Per-run config: future-proof for lore packs/endless toggles.
+        _db.RunConfigs.Add(new RunConfig
+        {
+            Id = Guid.NewGuid(),
+            RunId = runId,
+            DifficultyKey = difficulty.Key,
+            EndlessEnabled = difficulty.IsEndless,
+            MaxRooms = difficulty.IsEndless ? null : difficulty.MaxRooms,
+            EnabledLorePacks = new List<string> { "cosmic-horror" },
+            DialogueSeedOffset = 17,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow
+        });
+
         // Seed a basic inventory item table entry (empty by default; add one placeholder light source sometimes).
         if (resolvedSeed % 2 == 0)
         {

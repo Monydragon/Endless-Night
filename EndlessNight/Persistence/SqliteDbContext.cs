@@ -46,6 +46,9 @@ public sealed class SqliteDbContext : DbContext
     // Difficulty profiles (data-driven)
     public DbSet<DifficultyProfile> DifficultyProfiles => Set<DifficultyProfile>();
 
+    // Per-run configuration
+    public DbSet<RunConfig> RunConfigs => Set<RunConfig>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // MapDefinition
@@ -187,6 +190,16 @@ public sealed class SqliteDbContext : DbContext
             .HasIndex(x => new { x.RunId, x.Kind });
         modelBuilder.Entity<WorldObjectInstance>()
             .Property(x => x.LootItemKeys)
+            .HasConversion(new StringListJsonConverter());
+
+        // RunConfig
+        modelBuilder.Entity<RunConfig>().HasKey(x => x.Id);
+        modelBuilder.Entity<RunConfig>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<RunConfig>().HasIndex(x => x.RunId).IsUnique();
+        modelBuilder.Entity<RunConfig>()
+            .Property(x => x.EnabledLorePacks)
             .HasConversion(new StringListJsonConverter());
 
         base.OnModelCreating(modelBuilder);

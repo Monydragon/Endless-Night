@@ -50,5 +50,21 @@ public sealed class DifficultyProfileTests
         Assert.That(persisted, Is.Not.Null);
         Assert.That(persisted!.DifficultyKey, Is.EqualTo("very-hard"));
     }
-}
 
+    [Test]
+    public async Task RunService_CreateNewRun_ShouldCreateRunConfig()
+    {
+        using var db = CreateDbAndSeed();
+
+        var svc = new RunService(db, new ProceduralLevel1Generator());
+        var run = await svc.CreateNewRunAsync("Tester", seed: 1, difficultyKey: "endless");
+
+        var cfg = await db.RunConfigs.FirstOrDefaultAsync(c => c.RunId == run.RunId);
+        Assert.That(cfg, Is.Not.Null);
+        Assert.That(cfg!.DifficultyKey, Is.EqualTo("endless"));
+        Assert.That(cfg.EndlessEnabled, Is.True);
+        Assert.That(cfg.MaxRooms, Is.Null);
+        Assert.That(cfg.EnabledLorePacks, Is.Not.Null);
+        Assert.That(cfg.EnabledLorePacks.Count, Is.GreaterThan(0));
+    }
+}

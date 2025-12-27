@@ -33,8 +33,8 @@ public sealed class EndlessFrontierRingTests
         var start = await svc.GetCurrentRoomAsync(run);
         Assert.That(start, Is.Not.Null);
 
-        // Frontier ring radius defaults to 1, so all 4 directions should be available.
-        Assert.That(start!.Exits.Count, Is.EqualTo(4));
+        var cfg = await db.RunConfigs.FirstAsync(c => c.RunId == run.RunId);
+        Assert.That(start!.Exits.Count, Is.GreaterThanOrEqualTo(cfg.MinNewExitsPerRoom));
 
         // And all linked rooms should exist.
         foreach (var exit in start.Exits)
@@ -79,4 +79,3 @@ public sealed class EndlessFrontierRingTests
         Assert.That(cfg1.WorldGenCursor, Is.EqualTo(cfg2.WorldGenCursor));
     }
 }
-

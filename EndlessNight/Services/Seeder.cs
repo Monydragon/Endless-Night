@@ -204,7 +204,7 @@ public sealed class Seeder
         // Keys must be stable; values are tweakable.
         var profiles = new List<DifficultyProfile>
         {
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "casual",
@@ -226,9 +226,12 @@ public sealed class Seeder
                 MaxEnemiesPerRoom = 1,
                 MinRooms = 7,
                 MaxRooms = 9,
-                IsEndless = false
+                IsEndless = false,
+                TrapDisarmSanityCost = 3,
+                PacifyBaseSanityCost = 6,
+                PacifyCostMultiplier = 0.9f,
             },
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "novice",
@@ -250,9 +253,12 @@ public sealed class Seeder
                 MaxEnemiesPerRoom = 1,
                 MinRooms = 7,
                 MaxRooms = 10,
-                IsEndless = false
+                IsEndless = false,
+                TrapDisarmSanityCost = 4,
+                PacifyBaseSanityCost = 7,
+                PacifyCostMultiplier = 0.95f,
             },
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "easy",
@@ -274,9 +280,12 @@ public sealed class Seeder
                 MaxEnemiesPerRoom = 1,
                 MinRooms = 7,
                 MaxRooms = 10,
-                IsEndless = false
+                IsEndless = false,
+                TrapDisarmSanityCost = 5,
+                PacifyBaseSanityCost = 8,
+                PacifyCostMultiplier = 1.0f,
             },
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "normal",
@@ -299,9 +308,12 @@ public sealed class Seeder
                 MaxEnemiesPerRoom = 2,
                 MinRooms = 7,
                 MaxRooms = 10,
-                IsEndless = false
+                IsEndless = false,
+                TrapDisarmSanityCost = 6,
+                PacifyBaseSanityCost = 9,
+                PacifyCostMultiplier = 1.1f,
             },
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "challenging",
@@ -323,9 +335,12 @@ public sealed class Seeder
                 MaxEnemiesPerRoom = 2,
                 MinRooms = 8,
                 MaxRooms = 11,
-                IsEndless = false
+                IsEndless = false,
+                TrapDisarmSanityCost = 7,
+                PacifyBaseSanityCost = 10,
+                PacifyCostMultiplier = 1.2f,
             },
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "hard",
@@ -347,9 +362,12 @@ public sealed class Seeder
                 MaxEnemiesPerRoom = 3,
                 MinRooms = 8,
                 MaxRooms = 12,
-                IsEndless = false
+                IsEndless = false,
+                TrapDisarmSanityCost = 7,
+                PacifyBaseSanityCost = 10,
+                PacifyCostMultiplier = 1.2f,
             },
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "very-hard",
@@ -371,9 +389,12 @@ public sealed class Seeder
                 MaxEnemiesPerRoom = 3,
                 MinRooms = 9,
                 MaxRooms = 13,
-                IsEndless = false
+                IsEndless = false,
+                TrapDisarmSanityCost = 8,
+                PacifyBaseSanityCost = 12,
+                PacifyCostMultiplier = 1.35f,
             },
-            new()
+            new DifficultyProfile
             {
                 Id = Guid.NewGuid(),
                 Key = "endless",

@@ -70,6 +70,7 @@ public static class SqliteDbContextFactory
         try
         {
             PatchDifficultyProfiles(db);
+            PatchRoomInstances(db);
         }
         catch
         {
@@ -119,6 +120,46 @@ public static class SqliteDbContextFactory
         AddColumn("MaxNpcsPerRoom", "INTEGER", "1");
         AddColumn("MinEnemiesPerRoom", "INTEGER", "0");
         AddColumn("MaxEnemiesPerRoom", "INTEGER", "1");
+
+        // New trap/pacify tuning
+        AddColumn("TrapDisarmSanityCost", "INTEGER", "5");
+        AddColumn("PacifyBaseSanityCost", "INTEGER", "8");
+        AddColumn("PacifyCostMultiplier", "REAL", "1.0");
+
+        if (alters.Count == 0)
+            return;
+
+        foreach (var sql in alters)
+            db.Database.ExecuteSqlRaw(sql);
+    }
+
+    private static void PatchRoomInstances(SqliteDbContext db)
+    {
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        using (var cmd = db.Database.GetDbConnection().CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info('RoomInstances');";
+            if (cmd.Connection!.State != System.Data.ConnectionState.Open)
+                cmd.Connection.Open();
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader.GetString(1);
+                existing.Add(name);
+            }
+        }
+
+        var alters = new List<string>();
+
+        void AddColumn(string colName, string sqliteType, string defaultSql)
+        {
+            if (!existing.Contains(colName))
+                alters.Add($"ALTER TABLE RoomInstances ADD COLUMN {colName} {sqliteType} NOT NULL DEFAULT {defaultSql};");
+        }
+
+        AddColumn("IsCleared", "INTEGER", "0");
 
         if (alters.Count == 0)
             return;

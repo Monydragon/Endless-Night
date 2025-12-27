@@ -86,6 +86,9 @@ internal static class Program
                 return;
             }
 
+            // Resolve any on-entry traps before showing actions.
+            await ResolveEntryTrapsAsync(runService, run);
+
             // Get visible objects for HUD display
             var visibleObjects = await runService.GetVisibleWorldObjectsInCurrentRoomAsync(run);
 
@@ -101,6 +104,8 @@ internal static class Program
                 { "Move", "Navigate to an adjacent room" },
                 { "Search Room", "Search for hidden items and triggers" },
                 { "Interact", "Use objects in the room" },
+                { "Talk", "Speak to someone in the room" },
+                { "Encounter", "Spare / pacify enemies" },
                 { "Inventory", "View your collected items" },
                 { "Rest (Campfire)", "Restore health and sanity" },
                 { "Toggle Debug", "Enable/disable debug information" },
@@ -175,9 +180,21 @@ internal static class Program
                 continue;
             }
 
+            if (choice == "Talk")
+            {
+                await TalkMenuAsync(runService, run);
+                continue;
+            }
+
             if (choice == "Move")
             {
                 await MoveMenuAsync(runService, run, room);
+                continue;
+            }
+
+            if (choice == "Encounter")
+            {
+                await EncounterMenuAsync(runService, run);
                 continue;
             }
         }
@@ -200,6 +217,16 @@ internal static class Program
         {
             actions.Add("Interact");
         }
+
+        // Talk if any actors are present
+        var actors = await runService.GetActorsInCurrentRoomAsync(run);
+        if (actors.Count > 0)
+            actions.Add("Talk");
+
+        // Encounter if any enemies are present
+        var enemies = await runService.GetEnemiesInCurrentRoomAsync(run);
+        if (enemies.Count > 0)
+            actions.Add("Encounter");
 
         // Always show inventory
         actions.Add("Inventory");
@@ -550,6 +577,7 @@ internal static class Program
             {
                 "Spawn NPC",
                 "Spawn Enemy",
+                "Populate every room (NPC/Enemy)",
                 "Advance 1 turn",
                 "Advance 5 turns",
                 "Advance 20 turns",
@@ -565,6 +593,10 @@ internal static class Program
                     break;
                 case "Spawn Enemy":
                     await runService.ForceSpawnActorInCurrentRoomAsync(run, ActorKind.Enemy);
+                    break;
+                case "Populate every room (NPC/Enemy)":
+                    // NPC-biased population for readability in tests.
+                    await runService.PopulateActorsEveryRoomAsync(run, npcBias01: 0.6f);
                     break;
                 case "Advance 1 turn":
                     await runService.AdvanceTurnAsync(run, "testlab.turn");
@@ -730,4 +762,152 @@ internal static class Program
     }
 
     private static string EscapeMarkup(string text) => Markup.Escape(text ?? string.Empty);
+
+    private static async Task TalkMenuAsync(RunService runService, RunState run)
+    {
+        var actors = await runService.GetActorsInCurrentRoomAsync(run);
+        if (actors.Count == 0)
+        {
+            ControllerUI.ShowInfo("No one answers. No one is here.");
+            return;
+        }
+
+        var actorOptions = actors
+            .Select(a => (
+                option: $"{a.Kind}: {a.Name}",
+                description: a.IsHostile ? "Hostile" : a.IsPacified ? "Pacified" : a.Disposition.ToString()))
+            .ToList();
+        actorOptions.Add(("🔙 Back", "Return to actions"));
+
+        var (picked, idx) = ControllerUI.SelectFromMenuWithDescriptions("TALK TO", actorOptions);
+        if (picked == "🔙 Back")
+            return;
+
+        var actor = actors[Math.Clamp(idx, 0, actors.Count - 1)];
+
+        while (true)
+        {
+            var (node, choices, err) = await runService.GetDialogueAsync(run, actor.Id);
+            if (err is not null)
+            {
+                ControllerUI.ShowError(err);
+                return;
+            }
+
+            if (node is null)
+            {
+                ControllerUI.ShowInfo("They have nothing to say.");
+                return;
+            }
+
+            AnsiConsole.Clear();
+            AnsiConsole.MarkupLine($"[bold cyan]{ControllerUI.EscapeMarkup(actor.Name)}[/]");
+            if (!string.IsNullOrWhiteSpace(node.Speaker))
+                AnsiConsole.MarkupLine($"[grey]{ControllerUI.EscapeMarkup(node.Speaker)}[/]");
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine(ControllerUI.EscapeMarkup(node.Text));
+            AnsiConsole.WriteLine();
+
+            if (choices.Count == 0)
+            {
+                ControllerUI.ShowInfo("The conversation trails off.");
+                return;
+            }
+
+            var choiceOptions = choices
+                .Select(c => (
+                    option: c.Text,
+                    description: DescribeChoiceEffects(c)))
+                .ToList();
+            choiceOptions.Add(("🔙 End conversation", "Stop talking"));
+
+            var (pickedChoiceText, choiceIdx) = ControllerUI.SelectFromMenuWithDescriptions("CHOOSE", choiceOptions);
+            if (pickedChoiceText == "🔙 End conversation")
+                return;
+
+            var chosen = choices[Math.Clamp(choiceIdx, 0, choices.Count - 1)];
+            var (ok, msg) = await runService.ChooseDialogueAsync(run, actor.Id, chosen);
+            if (!ok)
+            {
+                ControllerUI.ShowError(msg ?? "That doesn't work.");
+                return;
+            }
+
+            var deltaSummary = DescribeChoiceEffects(chosen);
+            if (!string.IsNullOrWhiteSpace(deltaSummary))
+                ControllerUI.ShowSuccess(deltaSummary);
+        }
+    }
+
+    private static string DescribeChoiceEffects(EndlessNight.Domain.Dialogue.DialogueChoice c)
+    {
+        var parts = new List<string>();
+        if (c.HealthDelta != 0) parts.Add($"Health {(c.HealthDelta > 0 ? "+" : "")} {c.HealthDelta}");
+        if (c.SanityDelta != 0) parts.Add($"Sanity {(c.SanityDelta > 0 ? "+" : "")} {c.SanityDelta}");
+        if (c.MoralityDelta != 0) parts.Add($"Morality {(c.MoralityDelta > 0 ? "+" : "")} {c.MoralityDelta}");
+        if (!string.IsNullOrWhiteSpace(c.GrantItemKey)) parts.Add($"Gain {c.GrantItemKey} x{(c.GrantItemQuantity <= 0 ? 1 : c.GrantItemQuantity)}");
+        if (c.PacifyTarget) parts.Add("Pacify");
+        if (c.RevealDisposition is not null) parts.Add($"Disposition: {c.RevealDisposition}");
+        return parts.Count == 0 ? string.Empty : string.Join(" | ", parts);
+    }
+
+    private static async Task ResolveEntryTrapsAsync(RunService runService, RunState run)
+    {
+        while (true)
+        {
+            var trap = await runService.GetPendingEntryTrapAsync(run);
+            if (trap is null)
+                return;
+
+            AnsiConsole.Clear();
+            AnsiConsole.MarkupLine("[bold red]A TRAP TRIGGERS ON ENTRY[/]");
+            AnsiConsole.MarkupLine($"[yellow]{ControllerUI.EscapeMarkup(trap.Name)}[/]");
+            if (!string.IsNullOrWhiteSpace(trap.Description))
+                AnsiConsole.MarkupLine($"[dim]{ControllerUI.EscapeMarkup(trap.Description)}[/]");
+            AnsiConsole.WriteLine();
+
+            var options = new List<(string option, string description)>
+            {
+                ("Disarm", "Spend sanity to carefully disarm it"),
+                ("Endure", "Take the hit"),
+            };
+
+            var (picked, _) = ControllerUI.SelectFromMenuWithDescriptions("TRAP", options);
+            var (ok, msg) = await runService.ResolveEntryTrapAsync(run, trap.Id, disarm: picked == "Disarm");
+            if (ok)
+                ControllerUI.ShowSuccess(msg);
+            else
+                ControllerUI.ShowError(msg);
+        }
+    }
+
+    private static async Task EncounterMenuAsync(RunService runService, RunState run)
+    {
+        var enemies = await runService.GetEnemiesInCurrentRoomAsync(run);
+        if (enemies.Count == 0)
+        {
+            ControllerUI.ShowInfo("No enemies remain here.");
+            return;
+        }
+
+        var options = new List<(string option, string description)>();
+        foreach (var e in enemies)
+        {
+            var cost = await runService.GetPacifySanityCostAsync(run, e);
+            options.Add(($"Pacify: {e.Name}", $"Sanity -{cost} (Intensity {e.Intensity})"));
+        }
+
+        options.Add(("🔙 Back", "Return"));
+
+        var (picked, idx) = ControllerUI.SelectFromMenuWithDescriptions("ENCOUNTER", options);
+        if (picked == "🔙 Back")
+            return;
+
+        var enemy = enemies[Math.Clamp(idx, 0, enemies.Count - 1)];
+        var (ok, msg) = await runService.TryPacifyEnemyAsync(run, enemy.Id);
+        if (ok)
+            ControllerUI.ShowSuccess(msg);
+        else
+            ControllerUI.ShowError(msg);
+    }
 }

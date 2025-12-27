@@ -26,6 +26,12 @@ public sealed class RoomInstance : IRunScoped, INamedEntity
 
     public bool TrapTriggered { get; set; }
 
+    /// <summary>
+    /// Once true, this room will not spawn new enemies anymore.
+    /// (Existing enemies may still move/follow into it.)
+    /// </summary>
+    public bool IsCleared { get; set; }
+
     // Added grid coordinates for display/debugging
     public int X { get; set; }
     public int Y { get; set; }

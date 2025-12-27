@@ -83,4 +83,19 @@ public sealed class DifficultyProfile : IEntity
     public int MaxRooms { get; set; } = 10;
 
     public bool IsEndless { get; set; } = false;
+
+    /// <summary>
+    /// Sanity cost to disarm an on-entry trap.
+    /// </summary>
+    public int TrapDisarmSanityCost { get; set; } = 5;
+
+    /// <summary>
+    /// Base sanity cost to pacify an enemy.
+    /// </summary>
+    public int PacifyBaseSanityCost { get; set; } = 8;
+
+    /// <summary>
+    /// Multiplier applied to PacifyBaseSanityCost.
+    /// </summary>
+    public float PacifyCostMultiplier { get; set; } = 1.0f;
 }

@@ -154,6 +154,23 @@ public sealed class EndlessFrontierRingTests
         // Use a seed and endless mode to generate enough rooms.
         var run = await svc.CreateNewRunAsync("Lore", seed: 12121, difficultyKey: "endless");
 
+        // Force the presence of at least one lore item so this test can't flake due to RNG.
+        // (World gen can change over time; this keeps the test focused on "lore packs are enabled".)
+        db.WorldObjects.Add(new WorldObjectInstance
+        {
+            Id = Guid.NewGuid(),
+            RunId = run.RunId,
+            RoomId = run.CurrentRoomId,
+            Kind = WorldObjectKind.GroundItem,
+            Key = "lore.eldritch-idol",
+            Name = "Eldritch Idol",
+            Description = "A small idol that seems to watch from every angle.",
+            IsHidden = false,
+            ItemKey = "eldritch-idol",
+            Quantity = 1
+        });
+        await db.SaveChangesAsync();
+
         // Move around a bit to force procedural generation.
         for (var i = 0; i < 10; i++)
         {

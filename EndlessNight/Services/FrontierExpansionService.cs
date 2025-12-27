@@ -92,7 +92,22 @@ public sealed class FrontierExpansionService
 
                 // Otherwise generate a new room.
                 var dangerBase = Math.Clamp(room.DangerRating + (dist >= 1 ? 1 : 0), 0, 5);
-                var gen = _generator.GenerateRoom(run.RunId, run.Seed, cfg.WorldGenCursor, nx, ny, dangerBase);
+
+                // Difficulty influences scaling.
+                var difficulty = await _db.DifficultyProfiles.FirstOrDefaultAsync(d => d.Key == run.DifficultyKey, cancellationToken);
+                var dangerScale = difficulty?.EnemySpawnMultiplier ?? 1.0f;
+
+                var gen = _generator.GenerateRoom(
+                    run.RunId,
+                    run.Seed,
+                    cfg.WorldGenCursor,
+                    nx,
+                    ny,
+                    parentDepth: room.Depth,
+                    baseDanger: dangerBase,
+                    dangerScale: dangerScale,
+                    enabledLorePacks: cfg.EnabledLorePacks
+                );
                 cfg.WorldGenCursor++;
                 cfg.UpdatedUtc = DateTime.UtcNow;
 

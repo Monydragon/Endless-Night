@@ -29,4 +29,16 @@ public sealed class RoomInstance : IRunScoped, INamedEntity
     // Added grid coordinates for display/debugging
     public int X { get; set; }
     public int Y { get; set; }
+
+    /// <summary>
+    /// Generation depth from the starting room (parent depth + 1).
+    /// Cheap, stable, and good for difficulty pacing.
+    /// </summary>
+    public int Depth { get; set; }
+
+    /// <summary>
+    /// Procedural tags for this room used by dialogue/description systems.
+    /// Stored as JSON in SQLite.
+    /// </summary>
+    public List<string> RoomTags { get; set; } = new();
 }

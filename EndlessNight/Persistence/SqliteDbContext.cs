@@ -112,6 +112,9 @@ public sealed class SqliteDbContext : DbContext
         modelBuilder.Entity<RoomInstance>()
             .Property(x => x.Loot)
             .HasConversion(new StringListJsonConverter());
+        modelBuilder.Entity<RoomInstance>()
+            .Property(x => x.RoomTags)
+            .HasConversion(new StringListJsonConverter());
 
         // RunInventoryItem
         modelBuilder.Entity<RunInventoryItem>().HasKey(x => x.Id);

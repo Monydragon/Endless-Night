@@ -58,6 +58,10 @@ public sealed class RunService
             .Select(r =>
             {
                 r.Id = Guid.NewGuid();
+                // Ensure new fields have safe values for legacy generator rooms.
+                if (r.Depth < 0) r.Depth = 0;
+                r.RoomTags ??= new List<string>();
+                if (r.RoomTags.Count == 0) r.RoomTags.Add("seeded");
                 return r;
             })
             .ToList();

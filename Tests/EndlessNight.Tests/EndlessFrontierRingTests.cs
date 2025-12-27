@@ -78,4 +78,29 @@ public sealed class EndlessFrontierRingTests
         var cfg2 = await db2.RunConfigs.FirstAsync(c => c.RunId == r2.RunId);
         Assert.That(cfg1.WorldGenCursor, Is.EqualTo(cfg2.WorldGenCursor));
     }
+
+    [Test]
+    public async Task GeneratedRooms_ShouldHaveDepthAndTags()
+    {
+        using var db = CreateDbAndSeed();
+        var svc = new RunService(db, new ProceduralLevel1Generator());
+
+        var run = await svc.CreateNewRunAsync("Endless", seed: 4444, difficultyKey: "endless");
+        var start = await svc.GetCurrentRoomAsync(run);
+        Assert.That(start, Is.Not.Null);
+
+        // Move to ensure we enter a generated room.
+        var dir = start!.Exits.Keys.First();
+        var (ok, err) = await svc.MoveAsync(run, dir);
+        Assert.That(ok, Is.True, err);
+
+        var current = await svc.GetCurrentRoomAsync(run);
+        Assert.That(current, Is.Not.Null);
+        Assert.That(current!.Depth, Is.GreaterThanOrEqualTo(start.Depth + 1));
+        Assert.That(current.RoomTags, Is.Not.Null);
+        Assert.That(current.RoomTags.Count, Is.GreaterThan(0));
+
+        // Default config seeds cosmic-horror tag.
+        Assert.That(current.RoomTags.Any(t => t.Equals("cosmic", StringComparison.OrdinalIgnoreCase)), Is.True);
+    }
 }

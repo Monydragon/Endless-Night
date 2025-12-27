@@ -10,12 +10,19 @@ public sealed class EndlessRoomGenerator
 {
     public sealed record GeneratedRoom(RoomInstance Room, IReadOnlyList<WorldObjectInstance> Objects);
 
-    public GeneratedRoom GenerateRoom(Guid runId, int seed, int cursor, int x, int y, int dangerBase)
+    public GeneratedRoom GenerateRoom(Guid runId, int seed, int cursor, int x, int y, int parentDepth,
+        int baseDanger, float dangerScale, IReadOnlyList<string> enabledLorePacks)
     {
         // Cursor is included so generation is stable per run even when called at different times.
         var rng = new Random(HashCode.Combine(seed, cursor, x, y));
 
-        var (name, desc, danger) = GenerateRoomCore(rng, dangerBase);
+        var depth = Math.Max(0, parentDepth + 1);
+
+        // Scale danger with depth and difficulty multiplier.
+        var scaledBase = baseDanger + (int)MathF.Floor(depth * 0.15f * dangerScale);
+        var (name, desc, danger) = GenerateRoomCore(rng, scaledBase);
+
+        var tags = GenerateTags(rng, enabledLorePacks, danger, depth);
 
         var room = new RoomInstance
         {
@@ -26,7 +33,9 @@ public sealed class EndlessRoomGenerator
             DangerRating = danger,
             Loot = new List<string>(),
             X = x,
-            Y = y
+            Y = y,
+            Depth = depth,
+            RoomTags = tags
         };
 
         // Very small amount of deterministic object seeding (expanded later)
@@ -49,6 +58,40 @@ public sealed class EndlessRoomGenerator
         }
 
         return new GeneratedRoom(room, objects);
+    }
+
+    private static List<string> GenerateTags(Random rng, IReadOnlyList<string> enabledLorePacks, int danger, int depth)
+    {
+        var tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "procedural",
+            "indoors"
+        };
+
+        // Baseline cosmic vibe.
+        if (enabledLorePacks.Any(p => p.Equals("cosmic-horror", StringComparison.OrdinalIgnoreCase)))
+            tags.Add("cosmic");
+
+        // Danger-driven seasoning.
+        if (danger >= 3) tags.Add("hostile");
+        if (danger >= 4) tags.Add("terror");
+        if (depth >= 5) tags.Add("deep");
+
+        // Lore packs influence flavor tags.
+        if (enabledLorePacks.Any(p => p.Equals("lovecraft", StringComparison.OrdinalIgnoreCase)))
+            if (rng.NextDouble() < 0.35 + danger * 0.05) tags.Add("eldritch");
+
+        if (enabledLorePacks.Any(p => p.Equals("zork", StringComparison.OrdinalIgnoreCase)))
+            if (rng.NextDouble() < 0.25 + danger * 0.03) tags.Add("zorkish");
+
+        if (enabledLorePacks.Any(p => p.Equals("undertale", StringComparison.OrdinalIgnoreCase)))
+            if (rng.NextDouble() < 0.18 + (danger <= 1 ? 0.08 : 0.0)) tags.Add("undertaleish");
+
+        // Environmental tags.
+        var env = new[] { "dust", "echoes", "stone", "cold", "whispers", "damp", "moths" };
+        tags.Add(env[rng.Next(env.Length)]);
+
+        return tags.ToList();
     }
 
     private static (string name, string desc, int danger) GenerateRoomCore(Random rng, int dangerBase)
@@ -76,5 +119,8 @@ public sealed class EndlessRoomGenerator
         var danger = Math.Clamp(dangerBase + rng.Next(-1, 2), 0, 5);
         return (name, desc, danger);
     }
-}
 
+    // Backwards-compatible overload (used by older callers). Keeps behavior stable.
+    public GeneratedRoom GenerateRoom(Guid runId, int seed, int cursor, int x, int y, int dangerBase)
+        => GenerateRoom(runId, seed, cursor, x, y, parentDepth: 0, baseDanger: dangerBase, dangerScale: 1.0f, enabledLorePacks: Array.Empty<string>());
+}

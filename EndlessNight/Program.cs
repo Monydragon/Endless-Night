@@ -1,5 +1,4 @@
 ﻿using EndlessNight.Domain;
-using EndlessNight.Domain.Dialogue;
 using EndlessNight.Persistence;
 using EndlessNight.Services;
 using Microsoft.Extensions.Configuration;
@@ -397,7 +396,8 @@ internal static class Program
 
             var choices = new List<string> 
             { 
-                "Continue", "New Game", "New Game (Seeded)", 
+                "Continue", "New Game", "New Game (Seeded)",
+                "Test Lab (Debug)",
                 "Inspect Saves (Debug)", "Reset DB (Debug)", 
                 "Recreate DB (Fix tables)", "Quit" 
             };
@@ -406,6 +406,14 @@ internal static class Program
 
             if (choice == "Quit")
                 return null;
+
+            if (choice == "Test Lab (Debug)")
+            {
+                var run = await CreateNewRunWithDifficultyAsync(runService, playerName, sqliteConnectionString, seed: 12345);
+                await RunTestLabAsync(runService, run);
+                // After leaving the lab, return to menu.
+                continue;
+            }
 
             if (choice == "Reset DB (Debug)")
             {
@@ -447,7 +455,7 @@ internal static class Program
 
             if (choice == "New Game")
             {
-                var run = await runService.CreateNewRunAsync(playerName);
+                var run = await CreateNewRunWithDifficultyAsync(runService, playerName, sqliteConnectionString, seed: null);
                 await ShowIntroDialogueAsync(run);
                 return run;
             }
@@ -459,7 +467,7 @@ internal static class Program
                 if (!string.IsNullOrWhiteSpace(seedText) && int.TryParse(seedText, out var parsed))
                     seed = parsed;
 
-                var run = await runService.CreateNewRunAsync(playerName, seed);
+                var run = await CreateNewRunWithDifficultyAsync(runService, playerName, sqliteConnectionString, seed);
                 await ShowIntroDialogueAsync(run);
                 return run;
             }
@@ -475,7 +483,7 @@ internal static class Program
             if (runs.Count == 0)
             {
                 AnsiConsole.MarkupLine("[grey]No saves found. Starting a new run...[/]");
-                var run = await runService.CreateNewRunAsync(playerName);
+                var run = await CreateNewRunWithDifficultyAsync(runService, playerName, sqliteConnectionString, seed: null);
                 await ShowIntroDialogueAsync(run);
                 return run;
             }
@@ -486,6 +494,92 @@ internal static class Program
                 r => $"Run {r.RunId} | Turn {r.Turn} | Sanity {r.Sanity} | Health {r.Health} | Morality {r.Morality} | Updated {r.UpdatedUtc:u}");
 
             return runChoice;
+        }
+    }
+
+    private static async Task<RunState> CreateNewRunWithDifficultyAsync(
+        RunService runService,
+        string playerName,
+        string sqliteConnectionString,
+        int? seed)
+    {
+        // Difficulty selection (simple version)
+        // IMPORTANT: use the same configured DB file and reset-on-mismatch behavior,
+        // otherwise an older DB file will throw "no such column" for newly added fields.
+        var resetOnMismatch =
+            bool.TryParse(Environment.GetEnvironmentVariable("Sqlite__ResetOnModelMismatch"), out var parsed) && parsed;
+
+        using var dbTmp = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnModelMismatch: resetOnMismatch);
+        await new Seeder(dbTmp).EnsureSeededAsync();
+
+        var diffService = new DifficultyService(dbTmp);
+        var profiles = await diffService.GetAllAsync();
+
+        var options = profiles
+            .Select(p => (
+                option: p.Name,
+                description: string.IsNullOrWhiteSpace(p.Description) ? p.Key : $"{p.Description} (key: {p.Key})"))
+            .ToList();
+
+        var (_, idx) = ControllerUI.SelectFromMenuWithDescriptions("Select Difficulty", options);
+        var selected = profiles[Math.Clamp(idx, 0, profiles.Count - 1)];
+
+        return await runService.CreateNewRunAsync(playerName, seed, selected.Key);
+    }
+
+    private static async Task RunTestLabAsync(RunService runService, RunState run)
+    {
+        while (true)
+        {
+            AnsiConsole.Clear();
+            AnsiConsole.MarkupLine("[bold cyan]TEST LAB[/]");
+            AnsiConsole.MarkupLine("[dim]Quick iteration scene: spawn actors, advance turns, and watch the DB-backed movement/spawns.[/]");
+            AnsiConsole.WriteLine();
+
+            var room = await runService.GetCurrentRoomAsync(run);
+            var actors = await runService.GetActorsInCurrentRoomAsync(run);
+
+            AnsiConsole.MarkupLine($"[grey]Run[/]: {run.RunId}  [grey]Turn[/]: {run.Turn}  [grey]Room[/]: {ControllerUI.EscapeMarkup(room?.Name ?? "(unknown)")}");
+            AnsiConsole.MarkupLine($"[grey]Actors here[/]: {actors.Count}");
+            foreach (var a in actors)
+                AnsiConsole.MarkupLine($"  - [cyan]{a.Kind}[/] {ControllerUI.EscapeMarkup(a.Name)} (Intensity {a.Intensity})");
+
+            AnsiConsole.WriteLine();
+
+            var choices = new List<string>
+            {
+                "Spawn NPC",
+                "Spawn Enemy",
+                "Advance 1 turn",
+                "Advance 5 turns",
+                "Advance 20 turns",
+                "Back"
+            };
+
+            var choice = ControllerUI.SelectFromMenu("Test Lab Actions", choices);
+
+            switch (choice)
+            {
+                case "Spawn NPC":
+                    await runService.ForceSpawnActorInCurrentRoomAsync(run, ActorKind.Npc);
+                    break;
+                case "Spawn Enemy":
+                    await runService.ForceSpawnActorInCurrentRoomAsync(run, ActorKind.Enemy);
+                    break;
+                case "Advance 1 turn":
+                    await runService.AdvanceTurnAsync(run, "testlab.turn");
+                    break;
+                case "Advance 5 turns":
+                    for (int i = 0; i < 5; i++)
+                        await runService.AdvanceTurnAsync(run, "testlab.turn");
+                    break;
+                case "Advance 20 turns":
+                    for (int i = 0; i < 20; i++)
+                        await runService.AdvanceTurnAsync(run, "testlab.turn");
+                    break;
+                case "Back":
+                    return;
+            }
         }
     }
 
@@ -563,52 +657,9 @@ internal static class Program
         Pause();
     }
 
-    private static async Task TryPlayStoryChaptersAsync(RunService runService, RunState run)
-    {
-        var (started, chapterTitle) = await runService.TryStartNextStoryChapterAsync(run);
-        if (!started)
-            return;
-
-        if (!string.IsNullOrWhiteSpace(chapterTitle))
-        {
-            AnsiConsole.Clear();
-            AnsiConsole.Write(new Rule($"[bold]{EscapeMarkup(chapterTitle)}[/]").RuleStyle("grey").Centered());
-        }
-
-        while (true)
-        {
-            var (node, choices, error) = await runService.GetActiveStoryDialogueAsync(run);
-            if (error is not null)
-            {
-                AnsiConsole.MarkupLine($"[red]{EscapeMarkup(error)}[/]");
-                return;
-            }
-
-            if (node is null)
-                return;
-
-            AnsiConsole.MarkupLine($"\n[grey]{EscapeMarkup(node.Text)}[/]");
-
-            if (choices.Count == 0)
-                return;
-
-            var picked = ControllerUI.SelectFromList(
-                "Choose",
-                choices,
-                c => c.Text);
-
-            var (ok, chapterEnded, message) = await runService.ChooseActiveStoryDialogueAsync(run, picked.Id);
-            if (!ok)
-            {
-                if (!string.IsNullOrWhiteSpace(message))
-                    AnsiConsole.MarkupLine($"[red]{EscapeMarkup(message)}[/]");
-                return;
-            }
-
-            if (chapterEnded)
-                return;
-        }
-    }
+    // NOTE: Story chapter playback and dialogue encounter loop were prototyped earlier,
+    // but the referenced RunService APIs have since moved. We'll reintroduce these
+    // once the story pipeline is wired back into the current RunService.
 
     private static IEnumerable<string> GetAvailableActions(RoomInstance room, List<RunInventoryItem> inventory,
         List<WorldObjectInstance> objects)
@@ -658,59 +709,6 @@ internal static class Program
         return true;
     }
 
-    private static async Task RunEncounterAsync(RunService runService, RunState run, ActorInstance actor)
-    {
-        while (true)
-        {
-            var (node, choices, error) = await runService.GetDialogueAsync(run, actor.Id);
-            if (error is not null)
-            {
-                AnsiConsole.MarkupLine($"[red]{EscapeMarkup(error)}[/]");
-                return;
-            }
-
-            if (node is null)
-                return;
-
-            AnsiConsole.Clear();
-
-            // Procedural 'whisper' line (non-LLM), if present.
-            var whisper = await runService.GetLatestProceduralDialogueForActorAsync(run, actor.Id);
-            if (!string.IsNullOrWhiteSpace(whisper))
-            {
-                AnsiConsole.MarkupLine($"[italic orange3]{EscapeMarkup(whisper)}[/]");
-                AnsiConsole.WriteLine();
-            }
-
-            AnsiConsole.Write(new Rule($"[bold]{EscapeMarkup(node.Speaker)}[/]").RuleStyle("grey").Centered());
-            AnsiConsole.MarkupLine($"{EscapeMarkup(node.Text)}");
-            AnsiConsole.WriteLine();
-
-            if (choices.Count == 0)
-                return;
-
-            var picked = ControllerUI.SelectFromList(
-                "Choose",
-                choices,
-                c => c.Text);
-
-            var (ok, message) = await runService.ChooseDialogueAsync(run, actor.Id, picked);
-            if (!ok)
-            {
-                if (!string.IsNullOrWhiteSpace(message))
-                    AnsiConsole.MarkupLine($"[red]{EscapeMarkup(message)}[/]");
-                return;
-            }
-
-            // If the dialogue state is removed, the encounter is done.
-            var (node2, choices2, error2) = await runService.GetDialogueAsync(run, actor.Id);
-            if (error2 is not null)
-                return;
-
-            if (node2 is null || choices2.Count == 0)
-                return;
-        }
-    }
 
     private static string GetPercentColor(int value0To100)
     {

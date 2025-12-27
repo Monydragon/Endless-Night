@@ -15,7 +15,8 @@ public sealed class DifficultyService
 
     public Task<List<DifficultyProfile>> GetAllAsync(CancellationToken cancellationToken = default)
         => _db.DifficultyProfiles
-            .OrderBy(x => x.Name)
+            .OrderBy(x => x.SortOrder)
+            .ThenBy(x => x.Name)
             .ToListAsync(cancellationToken);
 
     public async Task<DifficultyProfile> GetOrDefaultAsync(string? key, CancellationToken cancellationToken = default)
@@ -52,4 +53,3 @@ public sealed class DifficultyService
         };
     }
 }
-

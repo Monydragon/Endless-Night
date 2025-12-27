@@ -33,6 +33,11 @@ public static class SqliteDbContextFactory
         try
         {
             db.Database.EnsureCreated();
+
+            // Lightweight schema patching for older DB files.
+            // We don't use EF migrations in this repo, so we apply a tiny in-place upgrade for known additions.
+            ApplySchemaPatches(db);
+
             return db;
         }
         catch (Exception) when (resetOnModelMismatch)
@@ -52,8 +57,74 @@ public static class SqliteDbContextFactory
             // Recreate after deleting old file.
             var db2 = new SqliteDbContext(options);
             db2.Database.EnsureCreated();
+
+            ApplySchemaPatches(db2);
+
             return db2;
         }
+    }
+
+    private static void ApplySchemaPatches(SqliteDbContext db)
+    {
+        // Only patch what we know about; keep it safe and idempotent.
+        try
+        {
+            PatchDifficultyProfiles(db);
+        }
+        catch
+        {
+            // Never block startup due to a best-effort patch.
+        }
+    }
+
+    private static void PatchDifficultyProfiles(SqliteDbContext db)
+    {
+        // Ensure new actor-tuning columns exist.
+        // SQLite supports ADD COLUMN but not IF NOT EXISTS, so we inspect PRAGMA table_info.
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        using (var cmd = db.Database.GetDbConnection().CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info('DifficultyProfiles');";
+            if (cmd.Connection!.State != System.Data.ConnectionState.Open)
+                cmd.Connection.Open();
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                // PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+                var name = reader.GetString(1);
+                existing.Add(name);
+            }
+        }
+
+        // Note: EF uses property names as column names by default.
+        var alters = new List<string>();
+
+        void AddColumn(string colName, string sqliteType, string defaultSql)
+        {
+            if (!existing.Contains(colName))
+                alters.Add($"ALTER TABLE DifficultyProfiles ADD COLUMN {colName} {sqliteType} NOT NULL DEFAULT {defaultSql};");
+        }
+
+        // New UI ordering
+        AddColumn("SortOrder", "INTEGER", "0");
+
+        // Actor tuning
+        AddColumn("NpcSpawnMultiplier", "REAL", "1.0");
+        AddColumn("ActorSpawnChanceOnEntry", "REAL", "0.25");
+        AddColumn("ActorSpawnChancePerTurn", "REAL", "0.25");
+        AddColumn("ActorMoveChancePerTurn", "REAL", "0.25");
+        AddColumn("MinNpcsPerRoom", "INTEGER", "0");
+        AddColumn("MaxNpcsPerRoom", "INTEGER", "1");
+        AddColumn("MinEnemiesPerRoom", "INTEGER", "0");
+        AddColumn("MaxEnemiesPerRoom", "INTEGER", "1");
+
+        if (alters.Count == 0)
+            return;
+
+        foreach (var sql in alters)
+            db.Database.ExecuteSqlRaw(sql);
     }
 
     public static bool TryResetDatabase(string connectionString)

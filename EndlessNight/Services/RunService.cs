@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EndlessNight.Services;
 
-public sealed class RunService
+public sealed partial class RunService
 {
     private readonly SqliteDbContext _db;
     private readonly ProceduralLevel1Generator _generator;
@@ -299,6 +299,9 @@ public sealed class RunService
         await new FrontierExpansionService(_db, new EndlessRoomGenerator())
             .EnsureFrontierRingAsync(run, cancellationToken);
 
+        // On-entry encounter chance (difficulty-driven).
+        await TriggerRoomEntryEncounterAsync(run, cancellationToken);
+
         // Sanity drift based on danger (scaled by difficulty + depth)
         var nextRoom = await GetCurrentRoomAsync(run, cancellationToken);
         if (nextRoom is not null && run.Sanity > 0 && nextRoom.DangerRating >= 2)
@@ -309,6 +312,9 @@ public sealed class RunService
             var drain = Math.Clamp((int)MathF.Ceiling(1.0f * scaled), 1, 5);
             run.Sanity = Math.Max(0, run.Sanity - drain);
         }
+
+        // Per-turn pulse: actors may spawn/move.
+        await ProcessActorTurnPulseAsync(run, cancellationToken);
 
         // Creepy message chance inversely proportional to sanity
         var rng = new Random(run.Seed + run.Turn);
@@ -406,6 +412,12 @@ public sealed class RunService
                 });
 
                 await _db.SaveChangesAsync(cancellationToken);
+
+                // Taking an item consumes a turn.
+                run.Turn++;
+                await ProcessActorTurnPulseAsync(run, cancellationToken);
+                await SaveRunAsync(run, cancellationToken);
+
                 return (true, $"You pick up {obj.ItemKey}.");
             }
 
@@ -448,7 +460,13 @@ public sealed class RunService
                 });
 
                 await _db.SaveChangesAsync(cancellationToken);
-                return (true, $"You open the chest and find: {found}.");
+
+                // Opening a chest consumes a turn.
+                run.Turn++;
+                await ProcessActorTurnPulseAsync(run, cancellationToken);
+                await SaveRunAsync(run, cancellationToken);
+
+                return (true, obj.LootItemKeys.Count == 0 ? "You open the chest. It's empty." : $"You open the chest and find: {found}.");
             }
 
             case WorldObjectKind.Trap:
@@ -474,6 +492,8 @@ public sealed class RunService
                     CreatedUtc = DateTime.UtcNow
                 });
 
+                run.Turn++;
+                await ProcessActorTurnPulseAsync(run, cancellationToken);
                 await SaveRunAsync(run, cancellationToken);
                 await _db.SaveChangesAsync(cancellationToken);
 
@@ -508,6 +528,12 @@ public sealed class RunService
                 });
 
                 await _db.SaveChangesAsync(cancellationToken);
+
+                // Solving consumes a turn.
+                run.Turn++;
+                await ProcessActorTurnPulseAsync(run, cancellationToken);
+                await SaveRunAsync(run, cancellationToken);
+
                 return (true, "Something yields. The way is open.");
             }
 
@@ -528,6 +554,9 @@ public sealed class RunService
                     CreatedUtc = DateTime.UtcNow
                 });
 
+                // Resting consumes a turn.
+                run.Turn++;
+                await ProcessActorTurnPulseAsync(run, cancellationToken);
                 await SaveRunAsync(run, cancellationToken);
                 return (true, "Warmth steadies your breathing. The Night steps back.");
             }
@@ -657,42 +686,244 @@ public sealed class RunService
         RunState run,
         CancellationToken cancellationToken = default)
     {
-        // Don't spawn if an actor is already here.
-        var existing = await GetActorsInCurrentRoomAsync(run, cancellationToken);
-        if (existing.Count > 0)
+        // Don't spawn if an actor is already here beyond caps; this keeps rooms readable.
+        var diff = await new DifficultyService(_db).GetOrDefaultAsync(run.DifficultyKey, cancellationToken);
+        var counts = await GetActorCountsInRoomAsync(run.RunId, run.CurrentRoomId, cancellationToken);
+        if (counts.Npcs + counts.Enemies >= Math.Max(0, diff.MaxNpcsPerRoom) + Math.Max(0, diff.MaxEnemiesPerRoom))
             return (null, null);
 
-        var rng = new Random(HashCode.Combine(run.Seed, run.Turn, run.CurrentRoomId.GetHashCode()));
+        var rng = new Random(HashCode.Combine(run.Seed, run.Turn, run.CurrentRoomId.GetHashCode(), 121));
 
-        var room = await GetCurrentRoomAsync(run, cancellationToken);
-        var depth = room?.Depth ?? 0;
-        var diff = await new DifficultyService(_db).GetOrDefaultAsync(run.DifficultyKey, cancellationToken);
-
-        // Base 35%, scaled by difficulty and depth.
-        var baseChance = 0.35;
-        var depthBonus = Math.Clamp(depth * 0.015, 0.0, 0.35); // up to +35%
-        var chance = Math.Clamp(baseChance * diff.EnemySpawnMultiplier + depthBonus, 0.05, 0.90);
-
+        var chance = Clamp01(diff.ActorSpawnChanceOnEntry);
         if (rng.NextDouble() > chance)
             return (null, null);
 
-        var isEnemy = rng.NextDouble() < 0.55;
-        var actor = new ActorInstance
+        var actor = await TrySpawnActorInRoomAsync(run, run.CurrentRoomId, triggerEventType: "actor.spawn.entry", cancellationToken);
+        if (actor is null)
+            return (null, null);
+
+        // Keep returning a node key for consumers that want to open dialogue.
+        return (actor, "encounter.stranger.1");
+    }
+
+    private static float Clamp01(float v) => v < 0 ? 0 : v > 1 ? 1 : v;
+
+    private sealed record RoomActorCounts(int Npcs, int Enemies);
+
+    private async Task<RoomActorCounts> GetActorCountsInRoomAsync(Guid runId, Guid roomId, CancellationToken cancellationToken)
+    {
+        var actors = await _db.ActorInstances
+            .AsNoTracking()
+            .Where(a => a.RunId == runId && a.CurrentRoomId == roomId && a.IsAlive)
+            .Select(a => a.Kind)
+            .ToListAsync(cancellationToken);
+
+        var npcs = actors.Count(k => k == ActorKind.Npc);
+        var enemies = actors.Count(k => k == ActorKind.Enemy);
+        return new RoomActorCounts(npcs, enemies);
+    }
+
+    private static ActorKind ChooseActorKind(Random rng, DifficultyProfile diff)
+    {
+        // Weighted random using difficulty multipliers.
+        // Lower difficulties seed more NPCs; higher difficulties tend toward enemies.
+        var npcWeight = Math.Max(0.01, diff.NpcSpawnMultiplier);
+        var enemyWeight = Math.Max(0.01, diff.EnemySpawnMultiplier);
+
+        var roll = rng.NextDouble() * (npcWeight + enemyWeight);
+        return roll < npcWeight ? ActorKind.Npc : ActorKind.Enemy;
+    }
+
+    private ActorInstance CreateNpc(Guid runId, Guid roomId, Random rng)
+    {
+        var names = new[]
+        {
+            "Wanderer", "Lost Soul", "Muffled Voice", "Hushed Traveler", "Flicker", "Quiet Stranger"
+        };
+
+        return new ActorInstance
         {
             Id = Guid.NewGuid(),
-            RunId = run.RunId,
-            CurrentRoomId = run.CurrentRoomId,
-            Kind = isEnemy ? ActorKind.Enemy : ActorKind.Npc,
-            Name = isEnemy ? "Stranger" : "Stranger",
-            Intensity = rng.Next(20, 75),
-            // Actor morality is independent; player morality affects how encounters play out later.
-            Morality = rng.Next(-50, 51),
+            RunId = runId,
+            CurrentRoomId = roomId,
+            Kind = ActorKind.Npc,
+            Name = names[rng.Next(names.Length)],
+            Intensity = rng.Next(10, 55),
+            Morality = rng.Next(-25, 76),
             Sanity = rng.Next(40, 101),
             Disposition = ActorDisposition.Unknown,
-            IsHostile = isEnemy && rng.NextDouble() < 0.6,
+            IsHostile = false,
             IsPacified = false,
             IsAlive = true
         };
+    }
+
+    private ActorInstance CreateEnemy(Guid runId, Guid roomId, Random rng)
+    {
+        var names = new[]
+        {
+            "Stranger", "Hollow", "Watcher", "Pale Thing", "Shade", "Grinning Silence"
+        };
+
+        return new ActorInstance
+        {
+            Id = Guid.NewGuid(),
+            RunId = runId,
+            CurrentRoomId = roomId,
+            Kind = ActorKind.Enemy,
+            Name = names[rng.Next(names.Length)],
+            Intensity = rng.Next(20, 80),
+            Morality = rng.Next(-75, 26),
+            Sanity = rng.Next(0, 51),
+            Disposition = ActorDisposition.Unknown,
+            IsHostile = rng.NextDouble() < 0.65,
+            IsPacified = false,
+            IsAlive = true
+        };
+    }
+
+    public async Task<ActorInstance> ForceSpawnActorInCurrentRoomAsync(RunState run, ActorKind kind,
+        CancellationToken cancellationToken = default)
+    {
+        var rng = new Random(HashCode.Combine(run.Seed, run.Turn, run.CurrentRoomId.GetHashCode(), (int)kind, 771));
+        var actor = kind == ActorKind.Npc
+            ? CreateNpc(run.RunId, run.CurrentRoomId, rng)
+            : CreateEnemy(run.RunId, run.CurrentRoomId, rng);
+
+        _db.ActorInstances.Add(actor);
+        _db.RoomEventLogs.Add(new RoomEventLog
+        {
+            Id = Guid.NewGuid(),
+            RunId = run.RunId,
+            Turn = run.Turn,
+            ActorId = actor.Id,
+            EventType = "actor.spawn.force",
+            Message = $"(Test) {actor.Kind} spawned: {actor.Name}.",
+            CreatedUtc = DateTime.UtcNow
+        });
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return actor;
+    }
+
+    public async Task AdvanceTurnAsync(RunState run, string sourceEventType,
+        CancellationToken cancellationToken = default)
+    {
+        // Ensure stats are clamped at the end.
+        run.Turn++;
+
+        _db.RoomEventLogs.Add(new RoomEventLog
+        {
+            Id = Guid.NewGuid(),
+            RunId = run.RunId,
+            Turn = run.Turn,
+            EventType = sourceEventType,
+            Message = "Time passes.",
+            CreatedUtc = DateTime.UtcNow
+        });
+
+        await ProcessActorTurnPulseAsync(run, cancellationToken);
+        await SaveRunAsync(run, cancellationToken);
+    }
+
+    private async Task ProcessActorTurnPulseAsync(RunState run, CancellationToken cancellationToken)
+    {
+        var diff = await new DifficultyService(_db).GetOrDefaultAsync(run.DifficultyKey, cancellationToken);
+
+        var rng = new Random(HashCode.Combine(run.Seed, run.Turn, run.CurrentRoomId.GetHashCode(), 991));
+
+        // Spawn pulse (25% by default)
+        var spawnChance = Clamp01(diff.ActorSpawnChancePerTurn);
+        if (rng.NextDouble() < spawnChance)
+            await TrySpawnActorInRoomAsync(run, run.CurrentRoomId, triggerEventType: "actor.spawn.turn", cancellationToken);
+
+        // Move pulse (25% by default). If it hits, each actor gets one move attempt.
+        var moveChance = Clamp01(diff.ActorMoveChancePerTurn);
+        if (rng.NextDouble() < moveChance)
+            await TryMoveActorsOnceAsync(run, rng, cancellationToken);
+    }
+
+    private async Task TryMoveActorsOnceAsync(RunState run, Random rng, CancellationToken cancellationToken)
+    {
+        // Move all actors that currently exist in the run, not just the room.
+        // This helps encounters "show up" more naturally via roaming.
+        var actors = await _db.ActorInstances
+            .Where(a => a.RunId == run.RunId && a.IsAlive)
+            .ToListAsync(cancellationToken);
+
+        if (actors.Count == 0)
+            return;
+
+        // Cache rooms for exit lookup (room graph can be big in endless).
+        var roomMap = await _db.RoomInstances
+            .AsNoTracking()
+            .Where(r => r.RunId == run.RunId)
+            .ToDictionaryAsync(r => r.RoomId, r => r, cancellationToken);
+
+        foreach (var actor in actors)
+        {
+            if (!roomMap.TryGetValue(actor.CurrentRoomId, out var room))
+                continue;
+
+            if (room.Exits.Count == 0)
+                continue;
+
+            // Randomly pick an exit.
+            var exits = room.Exits.Values.Where(id => id != Guid.Empty).Distinct().ToList();
+            if (exits.Count == 0)
+                continue;
+
+            var nextRoomId = exits[rng.Next(exits.Count)];
+            if (nextRoomId == Guid.Empty || nextRoomId == actor.CurrentRoomId)
+                continue;
+
+            actor.CurrentRoomId = nextRoomId;
+            _db.ActorInstances.Update(actor);
+
+            // Only log when actor enters/leaves the player's room (keeps log noise manageable).
+            if (actor.CurrentRoomId == run.CurrentRoomId || room.RoomId == run.CurrentRoomId)
+            {
+                _db.RoomEventLogs.Add(new RoomEventLog
+                {
+                    Id = Guid.NewGuid(),
+                    RunId = run.RunId,
+                    Turn = run.Turn,
+                    ActorId = actor.Id,
+                    EventType = "actor.move",
+                    Message = $"{actor.Name} slips through the shadows.",
+                    CreatedUtc = DateTime.UtcNow
+                });
+            }
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<ActorInstance?> TrySpawnActorInRoomAsync(RunState run, Guid roomId, string triggerEventType,
+        CancellationToken cancellationToken)
+    {
+        var diff = await new DifficultyService(_db).GetOrDefaultAsync(run.DifficultyKey, cancellationToken);
+
+        // Enforce simple per-room caps.
+        var counts = await GetActorCountsInRoomAsync(run.RunId, roomId, cancellationToken);
+
+        // Choose kind with weights.
+        var rng = new Random(HashCode.Combine(run.Seed, run.Turn, roomId.GetHashCode(), 443));
+        var kind = ChooseActorKind(rng, diff);
+
+        // Respect caps (fallback to other type if chosen type is capped)
+        if (kind == ActorKind.Npc && counts.Npcs >= Math.Max(0, diff.MaxNpcsPerRoom))
+            kind = ActorKind.Enemy;
+        if (kind == ActorKind.Enemy && counts.Enemies >= Math.Max(0, diff.MaxEnemiesPerRoom))
+            kind = ActorKind.Npc;
+
+        // If both are capped, no spawn.
+        if (counts.Npcs >= Math.Max(0, diff.MaxNpcsPerRoom) && counts.Enemies >= Math.Max(0, diff.MaxEnemiesPerRoom))
+            return null;
+
+        var actor = kind == ActorKind.Npc
+            ? CreateNpc(run.RunId, roomId, rng)
+            : CreateEnemy(run.RunId, roomId, rng);
 
         _db.ActorInstances.Add(actor);
 
@@ -703,6 +934,8 @@ public sealed class RunService
             RunId = run.RunId,
             ActorId = actor.Id,
             CurrentNodeKey = "encounter.stranger.1",
+            // Start at opening; on spawn we will immediately compose and advance to "middle".
+            ConversationPhase = "opening",
             UpdatedUtc = DateTime.UtcNow
         };
         _db.RunDialogueStates.Add(state);
@@ -712,7 +945,8 @@ public sealed class RunService
             Id = Guid.NewGuid(),
             RunId = run.RunId,
             Turn = run.Turn,
-            EventType = "encounter.spawn",
+            ActorId = actor.Id,
+            EventType = triggerEventType,
             Message = $"An unknown presence stirs here: {actor.Name}.",
             CreatedUtc = DateTime.UtcNow
         });
@@ -720,7 +954,14 @@ public sealed class RunService
         await _db.SaveChangesAsync(cancellationToken);
 
         // Procedural dialogue line (non-LLM) layered on top of the seeded node.
-        // This does not alter the node graph; it just produces flavor text and stores what was said.
+        await TryComposeProceduralDialogueAsync(run, actor, state, cancellationToken);
+
+        return actor;
+    }
+
+    private async Task TryComposeProceduralDialogueAsync(RunState run, ActorInstance actor, RunDialogueState state,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var cfg = await _db.RunConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.RunId == run.RunId, cancellationToken);
@@ -730,9 +971,7 @@ public sealed class RunService
             var contextTags = new List<string> { "encounter" };
             if (ctxRoom?.RoomTags is not null) contextTags.AddRange(ctxRoom.RoomTags);
 
-            var currentPhase = state.ConversationPhase;
-            if (string.IsNullOrWhiteSpace(currentPhase))
-                currentPhase = "opening";
+            var currentPhase = string.IsNullOrWhiteSpace(state.ConversationPhase) ? "opening" : state.ConversationPhase;
 
             var composer = new ProceduralDialogueComposer(_db);
             var composed = await composer.ComposeAsync(new ProceduralDialogueComposer.ComposeRequest(
@@ -751,322 +990,65 @@ public sealed class RunService
                 Phase: currentPhase
             ), cancellationToken);
 
-            if (!string.IsNullOrWhiteSpace(composed.Text))
+            if (string.IsNullOrWhiteSpace(composed.Text))
+                return;
+
+            state.LastComposedSnippetKeys = string.Join(';', composed.SnippetKeys);
+
+            // Phase progression: opening -> middle -> closing
+            state.ConversationPhase = currentPhase.Equals("opening", StringComparison.OrdinalIgnoreCase)
+                ? "middle"
+                : currentPhase.Equals("middle", StringComparison.OrdinalIgnoreCase)
+                    ? "closing"
+                    : "closing";
+
+            state.UpdatedUtc = DateTime.UtcNow;
+            _db.RunDialogueStates.Update(state);
+
+            _db.RoomEventLogs.Add(new RoomEventLog
             {
-                state.LastComposedSnippetKeys = string.Join(';', composed.SnippetKeys);
+                Id = Guid.NewGuid(),
+                RunId = run.RunId,
+                ActorId = actor.Id,
+                Turn = run.Turn,
+                EventType = "dialogue.procedural",
+                Message = composed.Text,
+                CreatedUtc = DateTime.UtcNow
+            });
 
-                // Phase progression
-                state.ConversationPhase = currentPhase.Equals("opening", StringComparison.OrdinalIgnoreCase)
-                    ? "middle"
-                    : currentPhase.Equals("middle", StringComparison.OrdinalIgnoreCase)
-                        ? "closing"
-                        : "closing";
-
-                state.UpdatedUtc = DateTime.UtcNow;
-                _db.RunDialogueStates.Update(state);
-
-                _db.RoomEventLogs.Add(new RoomEventLog
-                {
-                    Id = Guid.NewGuid(),
-                    RunId = run.RunId,
-                    ActorId = actor.Id,
-                    Turn = run.Turn,
-                    EventType = "dialogue.procedural",
-                    Message = composed.Text,
-                    CreatedUtc = DateTime.UtcNow
-                });
-
-                await _db.SaveChangesAsync(cancellationToken);
-            }
+            await _db.SaveChangesAsync(cancellationToken);
         }
         catch
         {
-            // Procedural dialogue is best-effort; never break gameplay if content is missing.
+            // Procedural dialogue should never break gameplay.
         }
-
-        return (actor, state.CurrentNodeKey);
     }
 
-    public async Task<(DialogueNode? node, List<DialogueChoice> choices, string? error)> GetDialogueAsync(
-        RunState run,
-        Guid actorId,
-        CancellationToken cancellationToken = default)
+    public async Task<List<RunState>> GetAllRunsAsync(CancellationToken cancellationToken = default)
     {
-        var state = await _db.RunDialogueStates
-            .FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == actorId, cancellationToken);
-
-        if (state is null)
-            return (null, new List<DialogueChoice>(), "No dialogue state exists for this actor.");
-
-        var node = await _db.DialogueNodes.FirstOrDefaultAsync(n => n.Key == state.CurrentNodeKey, cancellationToken);
-        if (node is null)
-            return (null, new List<DialogueChoice>(), $"Dialogue node '{state.CurrentNodeKey}' missing.");
-
-        var allChoices = await _db.DialogueChoices
-            .Where(c => c.FromNodeKey == state.CurrentNodeKey)
-            .OrderBy(c => c.Id)
+        return await _db.Runs
+            .OrderByDescending(r => r.UpdatedUtc)
             .ToListAsync(cancellationToken);
-
-        var available = allChoices
-            .Where(c => IsChoiceAvailable(run, c))
-            .ToList();
-
-        return (node, available, null);
     }
 
-    public async Task<(bool ok, string? message)> ChooseDialogueAsync(
-        RunState run,
-        Guid actorId,
-        Guid choiceId,
-        CancellationToken cancellationToken = default)
+    public async Task<(bool ok, string? error)> DeleteRunAsync(Guid runId, CancellationToken cancellationToken = default)
     {
-        var choice = await _db.DialogueChoices.FirstOrDefaultAsync(c => c.Id == choiceId, cancellationToken);
-        if (choice is null)
-            return (false, "Choice not found.");
+        var run = await _db.Runs.FindAsync(new object[] { runId }, cancellationToken);
+        if (run is null)
+            return (false, "Run not found.");
 
-        return await ChooseDialogueAsync(run, actorId, choice, cancellationToken);
-    }
+        // Cascading delete: all related data should be removed automatically.
+        _db.Runs.Remove(run);
 
-    public async Task<(bool ok, string? message)> ChooseDialogueAsync(
-        RunState run,
-        Guid actorId,
-        DialogueChoice choice,
-        CancellationToken cancellationToken = default)
-    {
-        var actor = await _db.ActorInstances
-            .FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == actorId, cancellationToken);
-
-        if (actor is null)
-            return (false, "Actor not found.");
-
-        // Apply consequences.
-        run.Sanity += choice.SanityDelta;
-        run.Health += choice.HealthDelta;
-        run.Morality += choice.MoralityDelta;
-
-        // Optional: grant an item.
-        if (!string.IsNullOrWhiteSpace(choice.GrantItemKey))
+        try
         {
-            var qty = choice.GrantItemQuantity <= 0 ? 1 : choice.GrantItemQuantity;
-            await AddToInventoryAsync(run, choice.GrantItemKey, qty, cancellationToken);
-
-            _db.RoomEventLogs.Add(new RoomEventLog
-            {
-                Id = Guid.NewGuid(),
-                RunId = run.RunId,
-                Turn = run.Turn,
-                EventType = "dialogue.grantItem",
-                Message = $"You receive: {choice.GrantItemKey} x{qty}.",
-                CreatedUtc = DateTime.UtcNow
-            });
-        }
-
-        if (choice.RevealDisposition is not null)
-            actor.Disposition = choice.RevealDisposition.Value;
-
-        if (choice.PacifyTarget && actor.Kind == ActorKind.Enemy)
-        {
-            actor.IsPacified = true;
-            actor.IsHostile = false;
-            actor.Disposition = ActorDisposition.Friendly;
-        }
-
-        // Advance dialogue state.
-        var state = await _db.RunDialogueStates
-            .FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == actorId, cancellationToken);
-
-        if (state is null)
-            return (false, "Dialogue state not found.");
-
-        if (string.IsNullOrWhiteSpace(choice.ToNodeKey))
-        {
-            // Conversation ends.
-            _db.RunDialogueStates.Remove(state);
-        }
-        else
-        {
-            state.CurrentNodeKey = choice.ToNodeKey;
-            state.UpdatedUtc = DateTime.UtcNow;
-            _db.RunDialogueStates.Update(state);
-        }
-
-        _db.ActorInstances.Update(actor);
-
-        _db.RoomEventLogs.Add(new RoomEventLog
-        {
-            Id = Guid.NewGuid(),
-            RunId = run.RunId,
-            Turn = run.Turn,
-            EventType = "dialogue.choice",
-            Message = $"You chose: {choice.Text}",
-            CreatedUtc = DateTime.UtcNow
-        });
-
-        await SaveRunAsync(run, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-
-        return (true, null);
-    }
-
-    public async Task<(bool started, string? message)> TryStartNextStoryChapterAsync(RunState run,
-        CancellationToken cancellationToken = default)
-    {
-        var state = await _db.RunStoryStates.FirstOrDefaultAsync(s => s.RunId == run.RunId, cancellationToken);
-        if (state is null)
-        {
-            state = new RunStoryState
-            {
-                Id = Guid.NewGuid(),
-                RunId = run.RunId,
-                ActiveChapterKey = null,
-                CurrentNodeKey = null,
-                UpdatedUtc = DateTime.UtcNow
-            };
-            _db.RunStoryStates.Add(state);
             await _db.SaveChangesAsync(cancellationToken);
+            return (true, null);
         }
-
-        // If a chapter is already active, don't start another.
-        if (!string.IsNullOrWhiteSpace(state.ActiveChapterKey) && !string.IsNullOrWhiteSpace(state.CurrentNodeKey))
-            return (false, null);
-
-        // Find the next chapter not yet completed.
-        var completed = state.CompletedChapterKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var next = await _db.StoryChapters
-            .OrderBy(c => c.Order)
-            .FirstOrDefaultAsync(c => !completed.Contains(c.Key), cancellationToken);
-
-        if (next is null)
-            return (false, null);
-
-        state.ActiveChapterKey = next.Key;
-        state.CurrentNodeKey = next.StartNodeKey;
-        state.UpdatedUtc = DateTime.UtcNow;
-        _db.RunStoryStates.Update(state);
-
-        _db.RoomEventLogs.Add(new RoomEventLog
+        catch (Exception ex)
         {
-            Id = Guid.NewGuid(),
-            RunId = run.RunId,
-            Turn = run.Turn,
-            EventType = "story.chapter.start",
-            Message = $"Chapter started: {next.Title}",
-            CreatedUtc = DateTime.UtcNow
-        });
-
-        await _db.SaveChangesAsync(cancellationToken);
-        return (true, next.Title);
-    }
-
-    public async Task<(DialogueNode? node, List<DialogueChoice> choices, string? error)> GetActiveStoryDialogueAsync(
-        RunState run,
-        CancellationToken cancellationToken = default)
-    {
-        var state = await _db.RunStoryStates.FirstOrDefaultAsync(s => s.RunId == run.RunId, cancellationToken);
-        if (state is null || string.IsNullOrWhiteSpace(state.CurrentNodeKey))
-            return (null, new List<DialogueChoice>(), "No active story chapter.");
-
-        var node = await _db.DialogueNodes.FirstOrDefaultAsync(n => n.Key == state.CurrentNodeKey, cancellationToken);
-        if (node is null)
-            return (null, new List<DialogueChoice>(), $"Dialogue node '{state.CurrentNodeKey}' missing.");
-
-        var allChoices = await _db.DialogueChoices
-            .Where(c => c.FromNodeKey == state.CurrentNodeKey)
-            .OrderBy(c => c.Id)
-            .ToListAsync(cancellationToken);
-
-        var available = allChoices
-            .Where(c => IsChoiceAvailable(run, c))
-            .ToList();
-
-        return (node, available, null);
-    }
-
-    public async Task<(bool ok, bool chapterEnded, string? message)> ChooseActiveStoryDialogueAsync(
-        RunState run,
-        Guid choiceId,
-        CancellationToken cancellationToken = default)
-    {
-        var state = await _db.RunStoryStates.FirstOrDefaultAsync(s => s.RunId == run.RunId, cancellationToken);
-        if (state is null || string.IsNullOrWhiteSpace(state.CurrentNodeKey) || string.IsNullOrWhiteSpace(state.ActiveChapterKey))
-            return (false, false, "No active story chapter.");
-
-        var choice = await _db.DialogueChoices.FirstOrDefaultAsync(c => c.Id == choiceId, cancellationToken);
-        if (choice is null)
-            return (false, false, "Choice not found.");
-
-        // Apply consequences onto the player.
-        run.Sanity += choice.SanityDelta;
-        run.Health += choice.HealthDelta;
-        run.Morality += choice.MoralityDelta;
-
-        // Advance or end chapter.
-        if (string.IsNullOrWhiteSpace(choice.ToNodeKey))
-        {
-            // Chapter ends now.
-            state.CompletedChapterKeys.Add(state.ActiveChapterKey);
-            state.ActiveChapterKey = null;
-            state.CurrentNodeKey = null;
-            state.UpdatedUtc = DateTime.UtcNow;
-
-            _db.RunStoryStates.Update(state);
-
-            _db.RoomEventLogs.Add(new RoomEventLog
-            {
-                Id = Guid.NewGuid(),
-                RunId = run.RunId,
-                Turn = run.Turn,
-                EventType = "story.chapter.end",
-                Message = "A story chapter ended.",
-                CreatedUtc = DateTime.UtcNow
-            });
-
-            await SaveRunAsync(run, cancellationToken);
-            await _db.SaveChangesAsync(cancellationToken);
-            return (true, true, null);
+            return (false, ex.Message);
         }
-
-        state.CurrentNodeKey = choice.ToNodeKey;
-        state.UpdatedUtc = DateTime.UtcNow;
-        _db.RunStoryStates.Update(state);
-
-        _db.RoomEventLogs.Add(new RoomEventLog
-        {
-            Id = Guid.NewGuid(),
-            RunId = run.RunId,
-            Turn = run.Turn,
-            EventType = "story.choice",
-            Message = $"Story choice: {choice.Text}",
-            CreatedUtc = DateTime.UtcNow
-        });
-
-        await SaveRunAsync(run, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        return (true, false, null);
-    }
-
-    public async Task<string?> GetLatestProceduralDialogueForActorAsync(RunState run, Guid actorId,
-        CancellationToken cancellationToken = default)
-    {
-        var evt = await _db.RoomEventLogs
-            .Where(e => e.RunId == run.RunId && e.ActorId == actorId)
-            .Where(e => e.EventType == "dialogue.procedural")
-            .OrderByDescending(e => e.CreatedUtc)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (evt is not null && !string.IsNullOrWhiteSpace(evt.Message))
-            return evt.Message;
-
-        // Fallback: if we stored snippet keys but didn't log the message (shouldn't happen), we can return the keys.
-        var state = await _db.RunDialogueStates
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == actorId, cancellationToken);
-
-        if (state is null || string.IsNullOrWhiteSpace(state.LastComposedSnippetKeys))
-            return null;
-
-        return $"[{state.LastComposedSnippetKeys}]";
     }
 
     private static bool IsChoiceAvailable(RunState run, DialogueChoice choice)
@@ -1131,5 +1113,117 @@ public sealed class RunService
         BitConverter.GetBytes(HashCode.Combine(seed, 3)).CopyTo(bytes, 12);
         return new Guid(bytes);
     }
-}
 
+    public async Task<(EndlessNight.Domain.Dialogue.DialogueNode? node, List<EndlessNight.Domain.Dialogue.DialogueChoice> choices, string? error)>
+        GetDialogueAsync(RunState run, Guid actorId, CancellationToken cancellationToken = default)
+    {
+        var state = await _db.RunDialogueStates
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == actorId, cancellationToken);
+
+        if (state is null)
+            return (null, new List<EndlessNight.Domain.Dialogue.DialogueChoice>(), null);
+
+        var node = await _db.DialogueNodes
+            .AsNoTracking()
+            .FirstOrDefaultAsync(n => n.Key == state.CurrentNodeKey, cancellationToken);
+
+        if (node is null)
+            return (null, new List<EndlessNight.Domain.Dialogue.DialogueChoice>(), $"Dialogue node '{state.CurrentNodeKey}' not found.");
+
+        var choices = await _db.DialogueChoices
+            .AsNoTracking()
+            .Where(c => c.FromNodeKey == state.CurrentNodeKey)
+            .OrderBy(c => c.Text)
+            .ToListAsync(cancellationToken);
+
+        // Apply requirement gates.
+        choices = choices.Where(c => IsChoiceAvailable(run, c)).ToList();
+
+        return (node, choices, null);
+    }
+
+    public async Task<(bool ok, string? message)> ChooseDialogueAsync(
+        RunState run,
+        Guid actorId,
+        EndlessNight.Domain.Dialogue.DialogueChoice choice,
+        CancellationToken cancellationToken = default)
+    {
+        var state = await _db.RunDialogueStates
+            .FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == actorId, cancellationToken);
+
+        if (state is null)
+            return (false, "No active conversation.");
+
+        if (!string.Equals(state.CurrentNodeKey, choice.FromNodeKey, StringComparison.Ordinal))
+            return (false, "That choice doesn't match the current conversation.");
+
+        if (!IsChoiceAvailable(run, choice))
+            return (false, "You can't choose that right now.");
+
+        // Apply deterministic consequences.
+        run.Sanity += choice.SanityDelta;
+        run.Health += choice.HealthDelta;
+        run.Morality += choice.MoralityDelta;
+
+        // Optional: grant an item.
+        if (!string.IsNullOrWhiteSpace(choice.GrantItemKey))
+        {
+            var qty = choice.GrantItemQuantity <= 0 ? 1 : choice.GrantItemQuantity;
+            await AddToInventoryAsync(run, choice.GrantItemKey!, qty, cancellationToken);
+        }
+
+        // Actor side-effects
+        var actor = await _db.ActorInstances.FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == actorId, cancellationToken);
+        if (actor is not null)
+        {
+            if (choice.RevealDisposition is not null)
+                actor.Disposition = choice.RevealDisposition.Value;
+
+            if (choice.PacifyTarget)
+                actor.IsPacified = true;
+
+            _db.ActorInstances.Update(actor);
+        }
+
+        // Advance or end.
+        if (string.IsNullOrWhiteSpace(choice.ToNodeKey))
+        {
+            _db.RunDialogueStates.Remove(state);
+        }
+        else
+        {
+            state.CurrentNodeKey = choice.ToNodeKey!;
+            state.UpdatedUtc = DateTime.UtcNow;
+            _db.RunDialogueStates.Update(state);
+        }
+
+        _db.RoomEventLogs.Add(new RoomEventLog
+        {
+            Id = Guid.NewGuid(),
+            RunId = run.RunId,
+            ActorId = actorId,
+            Turn = run.Turn,
+            EventType = "dialogue.choose",
+            Message = choice.Text,
+            CreatedUtc = DateTime.UtcNow
+        });
+
+        await SaveRunAsync(run, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return (true, null);
+    }
+
+    public async Task<string?> GetLatestProceduralDialogueForActorAsync(RunState run, Guid actorId, CancellationToken cancellationToken = default)
+    {
+        var msg = await _db.RoomEventLogs
+            .AsNoTracking()
+            .Where(e => e.RunId == run.RunId && e.ActorId == actorId && e.EventType == "dialogue.procedural")
+            .OrderByDescending(e => e.CreatedUtc)
+            .Select(e => e.Message)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return msg;
+    }
+}

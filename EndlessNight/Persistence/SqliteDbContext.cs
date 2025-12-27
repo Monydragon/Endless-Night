@@ -30,6 +30,8 @@ public sealed class SqliteDbContext : DbContext
     public DbSet<DialogueNode> DialogueNodes => Set<DialogueNode>();
     public DbSet<DialogueChoice> DialogueChoices => Set<DialogueChoice>();
     public DbSet<RunDialogueState> RunDialogueStates => Set<RunDialogueState>();
+    public DbSet<LorePack> LorePacks => Set<LorePack>();
+    public DbSet<DialogueSnippet> DialogueSnippets => Set<DialogueSnippet>();
 
     // Procedural runs
     public DbSet<RunState> Runs => Set<RunState>();
@@ -155,6 +157,22 @@ public sealed class SqliteDbContext : DbContext
             .ValueGeneratedNever();
         modelBuilder.Entity<DialogueChoice>().HasIndex(x => x.FromNodeKey);
         // GrantItemKey/GrantItemQuantity are simple scalar columns.
+
+        // LorePack
+        modelBuilder.Entity<LorePack>().HasKey(x => x.Id);
+        modelBuilder.Entity<LorePack>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<LorePack>().HasIndex(x => x.Key).IsUnique();
+
+        // DialogueSnippet
+        modelBuilder.Entity<DialogueSnippet>().HasKey(x => x.Id);
+        modelBuilder.Entity<DialogueSnippet>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<DialogueSnippet>().HasIndex(x => x.Key).IsUnique();
+        modelBuilder.Entity<DialogueSnippet>().HasIndex(x => x.PackKey);
+        modelBuilder.Entity<DialogueSnippet>().HasIndex(x => x.Role);
 
         // RunDialogueState
         modelBuilder.Entity<RunDialogueState>().HasKey(x => x.Id);

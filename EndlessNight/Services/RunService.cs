@@ -719,6 +719,58 @@ public sealed class RunService
 
         await _db.SaveChangesAsync(cancellationToken);
 
+        // Procedural dialogue line (non-LLM) layered on top of the seeded node.
+        // This does not alter the node graph; it just produces flavor text and stores what was said.
+        try
+        {
+            var cfg = await _db.RunConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.RunId == run.RunId, cancellationToken);
+            var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>());
+
+            var ctxRoom = await GetCurrentRoomAsync(run, cancellationToken);
+            var contextTags = new List<string> { "encounter" };
+            if (ctxRoom?.RoomTags is not null) contextTags.AddRange(ctxRoom.RoomTags);
+
+            var composer = new ProceduralDialogueComposer(_db);
+            var composed = await composer.ComposeAsync(new ProceduralDialogueComposer.ComposeRequest(
+                RunId: run.RunId,
+                Seed: run.Seed,
+                Turn: run.Turn,
+                PlayerName: run.PlayerName,
+                RoomName: ctxRoom?.Name ?? "",
+                EnabledLorePacks: enabledPacks,
+                ContextTags: contextTags,
+                Sanity: run.Sanity,
+                Morality: run.Morality,
+                Disposition: actor.Disposition,
+                MaxLines: 1,
+                SeedOffset: cfg?.DialogueSeedOffset
+            ), cancellationToken);
+
+            if (!string.IsNullOrWhiteSpace(composed.Text))
+            {
+                state.LastComposedSnippetKeys = string.Join(';', composed.SnippetKeys);
+                state.ConversationPhase = "opening";
+                state.UpdatedUtc = DateTime.UtcNow;
+                _db.RunDialogueStates.Update(state);
+
+                _db.RoomEventLogs.Add(new RoomEventLog
+                {
+                    Id = Guid.NewGuid(),
+                    RunId = run.RunId,
+                    Turn = run.Turn,
+                    EventType = "dialogue.procedural",
+                    Message = composed.Text,
+                    CreatedUtc = DateTime.UtcNow
+                });
+
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+        }
+        catch
+        {
+            // Procedural dialogue is best-effort; never break gameplay if content is missing.
+        }
+
         return (actor, state.CurrentNodeKey);
     }
 

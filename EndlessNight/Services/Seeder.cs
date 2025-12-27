@@ -22,6 +22,8 @@ public sealed class Seeder
         await SeedDifficultyProfilesAsync(cancellationToken);
         await SeedDialogueAsync(cancellationToken);
         await SeedStoryChaptersAsync(cancellationToken);
+        await SeedLorePacksAsync(cancellationToken);
+        await SeedDialogueSnippetsAsync(cancellationToken);
 
         await _db.SaveChangesAsync(cancellationToken);
     }
@@ -545,5 +547,148 @@ public sealed class Seeder
         existing.GrantItemKey = choice.GrantItemKey;
         existing.GrantItemQuantity = choice.GrantItemQuantity;
         _db.DialogueChoices.Update(existing);
+    }
+
+    private async Task SeedLorePacksAsync(CancellationToken cancellationToken)
+    {
+        var packs = new List<LorePack>
+        {
+            new() { Id = Guid.NewGuid(), Key = "cosmic-horror", Name = "Cosmic Horror", StyleTags = "cosmic;horror;dread" },
+            new() { Id = Guid.NewGuid(), Key = "lovecraft", Name = "Lovecraftian", StyleTags = "eldritch;antiquarian;madness" },
+            new() { Id = Guid.NewGuid(), Key = "zork", Name = "Parser Classic", StyleTags = "parser;adventure;retro" },
+            new() { Id = Guid.NewGuid(), Key = "undertale", Name = "Quirky Meta", StyleTags = "meta;whimsy;bittersweet" },
+        };
+
+        foreach (var p in packs)
+        {
+            var existing = await _db.LorePacks.FirstOrDefaultAsync(x => x.Key == p.Key, cancellationToken);
+            if (existing is null)
+                _db.LorePacks.Add(p);
+            else
+            {
+                existing.Name = p.Name;
+                existing.StyleTags = p.StyleTags;
+                _db.LorePacks.Update(existing);
+            }
+        }
+    }
+
+    private async Task SeedDialogueSnippetsAsync(CancellationToken cancellationToken)
+    {
+        // Minimal seed set; expand over time.
+        var snippets = new List<DialogueSnippet>
+        {
+            // Pack-agnostic
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "base.opening.001",
+                Role = "opening",
+                Tags = "encounter;room",
+                Weight = 8,
+                Text = "The air in {room} tastes like {fearWord}."
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "base.middle.001",
+                Role = "middle",
+                Tags = "encounter",
+                Weight = 6,
+                Text = "You feel watched—politely. Like something is waiting its turn."
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "base.closing.001",
+                Role = "closing",
+                Tags = "encounter",
+                Weight = 6,
+                Text = "Your name, {player}, sounds unfamiliar in your own mouth."
+            },
+
+            // Lovecraft
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "lovecraft.opening.001",
+                PackKey = "lovecraft",
+                Role = "opening",
+                Tags = "encounter;cosmic",
+                Weight = 10,
+                Text = "There is an angle in {room} that refuses to be measured."
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "lovecraft.middle.lowSanity.001",
+                PackKey = "lovecraft",
+                Role = "middle",
+                Tags = "encounter;cosmic",
+                Weight = 12,
+                MaxSanity = 30,
+                Text = "A thought crawls across your mind like a pale insect: it knows your shape."
+            },
+
+            // Zork-ish (homage)
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "zork.opening.001",
+                PackKey = "zork",
+                Role = "opening",
+                Tags = "encounter;room",
+                Weight = 8,
+                Text = "It is pitch dark. You are likely to be eaten by a {fearWord}."
+            },
+
+            // Undertale-ish (homage)
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "undertale.middle.001",
+                PackKey = "undertale",
+                Role = "middle",
+                Tags = "encounter",
+                Weight = 6,
+                Text = "A small part of you wonders if the darkness is just... shy."
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "undertale.closing.lowSanity.001",
+                PackKey = "undertale",
+                Role = "closing",
+                Tags = "encounter",
+                Weight = 9,
+                MaxSanity = 35,
+                Text = "You laugh once, quietly. The sound doesn't match the room."
+            },
+        };
+
+        foreach (var s in snippets)
+            await UpsertDialogueSnippetAsync(s, cancellationToken);
+    }
+
+    private async Task UpsertDialogueSnippetAsync(DialogueSnippet snippet, CancellationToken cancellationToken)
+    {
+        var existing = await _db.DialogueSnippets.FirstOrDefaultAsync(x => x.Key == snippet.Key, cancellationToken);
+        if (existing is null)
+        {
+            _db.DialogueSnippets.Add(snippet);
+            return;
+        }
+
+        existing.Text = snippet.Text;
+        existing.Tags = snippet.Tags;
+        existing.Weight = snippet.Weight;
+        existing.PackKey = snippet.PackKey;
+        existing.MinSanity = snippet.MinSanity;
+        existing.MaxSanity = snippet.MaxSanity;
+        existing.MinMorality = snippet.MinMorality;
+        existing.MaxMorality = snippet.MaxMorality;
+        existing.RequiredDisposition = snippet.RequiredDisposition;
+        existing.Role = snippet.Role;
+        _db.DialogueSnippets.Update(existing);
     }
 }

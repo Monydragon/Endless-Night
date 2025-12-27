@@ -32,6 +32,7 @@ public sealed class SqliteDbContext : DbContext
     public DbSet<RunDialogueState> RunDialogueStates => Set<RunDialogueState>();
     public DbSet<LorePack> LorePacks => Set<LorePack>();
     public DbSet<DialogueSnippet> DialogueSnippets => Set<DialogueSnippet>();
+    public DbSet<LoreWord> LoreWords => Set<LoreWord>();
 
     // Procedural runs
     public DbSet<RunState> Runs => Set<RunState>();
@@ -225,6 +226,15 @@ public sealed class SqliteDbContext : DbContext
         modelBuilder.Entity<RunConfig>()
             .Property(x => x.EnabledLorePacks)
             .HasConversion(new StringListJsonConverter());
+
+        // LoreWord
+        modelBuilder.Entity<LoreWord>().HasKey(x => x.Id);
+        modelBuilder.Entity<LoreWord>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<LoreWord>().HasIndex(x => x.Key).IsUnique();
+        modelBuilder.Entity<LoreWord>().HasIndex(x => x.PackKey);
+        modelBuilder.Entity<LoreWord>().HasIndex(x => x.Category);
 
         base.OnModelCreating(modelBuilder);
     }

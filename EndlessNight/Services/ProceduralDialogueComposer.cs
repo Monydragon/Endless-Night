@@ -146,18 +146,17 @@ public sealed class ProceduralDialogueComposer
         return filtered[^1];
     }
 
-    private static string ApplyTemplate(string input, ComposeRequest req, Random rng)
+    private string ApplyTemplate(string input, ComposeRequest req, Random rng)
     {
         if (string.IsNullOrEmpty(input))
             return string.Empty;
 
-        var fearWords = new[] { "whisper", "static", "hunger", "teeth", "echo", "ink", "moths" };
-        var fearWord = fearWords[rng.Next(fearWords.Length)];
-
-        return input
+        var composed = input
             .Replace("{player}", req.PlayerName, StringComparison.OrdinalIgnoreCase)
-            .Replace("{room}", req.RoomName, StringComparison.OrdinalIgnoreCase)
-            .Replace("{fearWord}", fearWord, StringComparison.OrdinalIgnoreCase);
+            .Replace("{room}", req.RoomName, StringComparison.OrdinalIgnoreCase);
+
+        composed = ReplaceFearWord(composed, req, rng);
+        return composed;
     }
 
     private static List<string> ParseTags(string? tags)
@@ -170,5 +169,58 @@ public sealed class ProceduralDialogueComposer
             .Where(t => t.Length > 0)
             .ToList();
     }
-}
 
+    private string ReplaceFearWord(string input, ComposeRequest req, Random rng)
+    {
+        if (!input.Contains("{fearWord}", StringComparison.OrdinalIgnoreCase))
+            return input;
+
+        var fearWord = PickFearWordAsync(req, rng).GetAwaiter().GetResult();
+        return input.Replace("{fearWord}", fearWord, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<string> PickFearWordAsync(ComposeRequest req, Random rng)
+    {
+        // Pull from DB so modding/expansion is purely data-driven.
+        var words = await _db.LoreWords
+            .AsNoTracking()
+            .Where(w => w.Category == "fear")
+            .ToListAsync();
+
+        // Sanity + pack gating
+        var eligible = words
+            .Where(w => w.MinSanity is null || req.Sanity >= w.MinSanity.Value)
+            .Where(w => w.MaxSanity is null || req.Sanity <= w.MaxSanity.Value)
+            .Where(w => string.IsNullOrWhiteSpace(w.PackKey) || req.EnabledLorePacks.Any(p => p.Equals(w.PackKey, StringComparison.OrdinalIgnoreCase)))
+            .Where(w => w.Weight > 0)
+            .ToList();
+
+        if (eligible.Count == 0)
+            return "whisper";
+
+        // Sanity-driven bias: at low sanity, favor pack-specific words more.
+        // This keeps the style sharper and makes "lovecraft"/"zork"/"undertale" feel more present.
+        var sanity01 = Math.Clamp(req.Sanity / 100.0, 0.0, 1.0);
+        var lowSanityBias = 1.0 - sanity01; // 0 when sane, 1 when broken
+
+        // When bias is high, pack-specific words get a multiplier.
+        // Deterministic and cheap.
+        const int packBoostMax = 4; // up to 4x at 0 sanity
+
+        var weightedPool = eligible
+            .Select(w => (w, effectiveWeight: w.Weight * (string.IsNullOrWhiteSpace(w.PackKey) ? 1 : 1 + (int)Math.Round(lowSanityBias * packBoostMax))))
+            .Where(x => x.effectiveWeight > 0)
+            .ToList();
+
+        var total = weightedPool.Sum(x => x.effectiveWeight);
+        var roll = rng.Next(total);
+        foreach (var entry in weightedPool)
+        {
+            roll -= entry.effectiveWeight;
+            if (roll < 0)
+                return entry.w.Text;
+        }
+
+        return weightedPool[^1].w.Text;
+    }
+}

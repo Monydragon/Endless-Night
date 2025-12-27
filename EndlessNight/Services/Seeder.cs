@@ -24,6 +24,7 @@ public sealed class Seeder
         await SeedStoryChaptersAsync(cancellationToken);
         await SeedLorePacksAsync(cancellationToken);
         await SeedDialogueSnippetsAsync(cancellationToken);
+        await SeedLoreWordsAsync(cancellationToken);
 
         await _db.SaveChangesAsync(cancellationToken);
     }
@@ -168,6 +169,33 @@ public sealed class Seeder
             Name = "Coiled Rope",
             Description = "Thick hemp rope, frayed but strong. It remembers holding things.",
             Tags = new List<string> { "tool" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "eldritch-idol",
+            Name = "Eldritch Idol",
+            Description = "A small idol. It seems to watch from angles you can't name.",
+            Tags = new List<string> { "artifact", "lore", "lovecraft" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "brass-lantern",
+            Name = "Brass Lantern",
+            Description = "A brass lantern with a too-familiar weight.",
+            Tags = new List<string> { "light", "tool", "lore", "zork" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "blue-heart-charm",
+            Name = "Blue Heart Charm",
+            Description = "A small charm shaped like a blue heart. It thrums faintly.",
+            Tags = new List<string> { "artifact", "lore", "undertale" }
         }, cancellationToken);
     }
 
@@ -690,5 +718,51 @@ public sealed class Seeder
         existing.RequiredDisposition = snippet.RequiredDisposition;
         existing.Role = snippet.Role;
         _db.DialogueSnippets.Update(existing);
+    }
+
+    private async Task SeedLoreWordsAsync(CancellationToken cancellationToken)
+    {
+        var words = new List<LoreWord>
+        {
+            // Base pool (always available)
+            new() { Id = Guid.NewGuid(), Key = "base.fear.whisper", Category = "fear", Text = "whisper", Weight = 8 },
+            new() { Id = Guid.NewGuid(), Key = "base.fear.static", Category = "fear", Text = "static", Weight = 6 },
+            new() { Id = Guid.NewGuid(), Key = "base.fear.echo", Category = "fear", Text = "echo", Weight = 6 },
+            new() { Id = Guid.NewGuid(), Key = "base.fear.moths", Category = "fear", Text = "moths", Weight = 4 },
+
+            // Lovecraft pool: more likely at lower sanity
+            new() { Id = Guid.NewGuid(), Key = "lovecraft.fear.ichor", Category = "fear", Text = "ichor", PackKey = "lovecraft", Weight = 8, MaxSanity = 45 },
+            new() { Id = Guid.NewGuid(), Key = "lovecraft.fear.eldritch", Category = "fear", Text = "eldritch", PackKey = "lovecraft", Weight = 8, MaxSanity = 50 },
+            new() { Id = Guid.NewGuid(), Key = "lovecraft.fear.non_euclid", Category = "fear", Text = "non-Euclid", PackKey = "lovecraft", Weight = 6, MaxSanity = 40 },
+
+            // Zork-ish pool: classic hazard words
+            new() { Id = Guid.NewGuid(), Key = "zork.fear.grue", Category = "fear", Text = "grue", PackKey = "zork", Weight = 8 },
+            new() { Id = Guid.NewGuid(), Key = "zork.fear.darkness", Category = "fear", Text = "darkness", PackKey = "zork", Weight = 6 },
+
+            // Undertale-ish pool: quirky
+            new() { Id = Guid.NewGuid(), Key = "undertale.fear.smile", Category = "fear", Text = "smile", PackKey = "undertale", Weight = 4 },
+            new() { Id = Guid.NewGuid(), Key = "undertale.fear.joke", Category = "fear", Text = "joke", PackKey = "undertale", Weight = 3 },
+        };
+
+        foreach (var w in words)
+            await UpsertLoreWordAsync(w, cancellationToken);
+    }
+
+    private async Task UpsertLoreWordAsync(LoreWord word, CancellationToken cancellationToken)
+    {
+        var existing = await _db.LoreWords.FirstOrDefaultAsync(x => x.Key == word.Key, cancellationToken);
+        if (existing is null)
+        {
+            _db.LoreWords.Add(word);
+            return;
+        }
+
+        existing.Text = word.Text;
+        existing.Category = word.Category;
+        existing.PackKey = word.PackKey;
+        existing.Weight = word.Weight;
+        existing.MinSanity = word.MinSanity;
+        existing.MaxSanity = word.MaxSanity;
+        _db.LoreWords.Update(existing);
     }
 }

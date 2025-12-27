@@ -19,7 +19,8 @@ public sealed class ProceduralDialogueComposer
         int Morality,
         ActorDisposition Disposition,
         int MaxLines = 2,
-        int? SeedOffset = null);
+        int? SeedOffset = null,
+        string? Phase = null);
 
     public sealed record ComposeResult(string Text, IReadOnlyList<string> SnippetKeys);
 
@@ -50,7 +51,9 @@ public sealed class ProceduralDialogueComposer
             return new ComposeResult(string.Empty, Array.Empty<string>());
 
         // Prefer an opening/middle/closing progression if possible.
-        var phases = new[] { "opening", "middle", "closing" };
+        var phases = req.Phase is null
+            ? new[] { "opening", "middle", "closing" }
+            : new[] { req.Phase };
         var picked = new List<DialogueSnippet>();
 
         foreach (var role in phases)
@@ -69,12 +72,16 @@ public sealed class ProceduralDialogueComposer
             eligible.RemoveAll(s => s.Key == next.Key);
         }
 
-        // If we still need lines, fill from anything eligible.
-        while (picked.Count < req.MaxLines && eligible.Count > 0)
+        // If a specific phase was requested, don't backfill with other roles.
+        if (req.Phase is null)
         {
-            var next = PickWeighted(rng, eligible);
-            picked.Add(next);
-            eligible.RemoveAll(s => s.Key == next.Key);
+            // If we still need lines, fill from anything eligible.
+            while (picked.Count < req.MaxLines && eligible.Count > 0)
+            {
+                var next = PickWeighted(rng, eligible);
+                picked.Add(next);
+                eligible.RemoveAll(s => s.Key == next.Key);
+            }
         }
 
         var snippetKeys = picked.Select(p => p.Key).ToList();
@@ -112,7 +119,7 @@ public sealed class ProceduralDialogueComposer
         var sTags = ParseTags(s.Tags);
         if (sTags.Count > 0)
         {
-            var reqTags = new HashSet<string>(req.ContextTags ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var reqTags = new HashSet<string>(req.ContextTags, StringComparer.OrdinalIgnoreCase);
             if (!sTags.Any(t => reqTags.Contains(t)))
                 return false;
         }
@@ -148,8 +155,8 @@ public sealed class ProceduralDialogueComposer
         var fearWord = fearWords[rng.Next(fearWords.Length)];
 
         return input
-            .Replace("{player}", req.PlayerName ?? "Player", StringComparison.OrdinalIgnoreCase)
-            .Replace("{room}", req.RoomName ?? "the room", StringComparison.OrdinalIgnoreCase)
+            .Replace("{player}", req.PlayerName, StringComparison.OrdinalIgnoreCase)
+            .Replace("{room}", req.RoomName, StringComparison.OrdinalIgnoreCase)
             .Replace("{fearWord}", fearWord, StringComparison.OrdinalIgnoreCase);
     }
 

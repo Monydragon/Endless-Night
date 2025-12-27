@@ -58,7 +58,7 @@ public sealed class ProceduralDialogueComposerTests
             Id = Guid.NewGuid(),
             Key = "test.weight.low",
             Text = "LOW",
-            Tags = "encounter",
+            Tags = "__weight_test__",
             Weight = 1,
             Role = "opening"
         });
@@ -67,7 +67,7 @@ public sealed class ProceduralDialogueComposerTests
             Id = Guid.NewGuid(),
             Key = "test.weight.high",
             Text = "HIGH",
-            Tags = "encounter",
+            Tags = "__weight_test__",
             Weight = 20,
             Role = "opening"
         });
@@ -88,7 +88,7 @@ public sealed class ProceduralDialogueComposerTests
                 PlayerName: "Tester",
                 RoomName: "Room",
                 EnabledLorePacks: Array.Empty<string>(),
-                ContextTags: new[] { "encounter" },
+                ContextTags: new[] { "__weight_test__" },
                 Sanity: 50,
                 Morality: 0,
                 Disposition: EndlessNight.Domain.ActorDisposition.Unknown,
@@ -104,4 +104,3 @@ public sealed class ProceduralDialogueComposerTests
         Assert.That(high, Is.GreaterThan(low * 3));
     }
 }
-

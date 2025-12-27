@@ -730,6 +730,10 @@ public sealed class RunService
             var contextTags = new List<string> { "encounter" };
             if (ctxRoom?.RoomTags is not null) contextTags.AddRange(ctxRoom.RoomTags);
 
+            var currentPhase = state.ConversationPhase;
+            if (string.IsNullOrWhiteSpace(currentPhase))
+                currentPhase = "opening";
+
             var composer = new ProceduralDialogueComposer(_db);
             var composed = await composer.ComposeAsync(new ProceduralDialogueComposer.ComposeRequest(
                 RunId: run.RunId,
@@ -743,13 +747,21 @@ public sealed class RunService
                 Morality: run.Morality,
                 Disposition: actor.Disposition,
                 MaxLines: 1,
-                SeedOffset: cfg?.DialogueSeedOffset
+                SeedOffset: cfg?.DialogueSeedOffset,
+                Phase: currentPhase
             ), cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(composed.Text))
             {
                 state.LastComposedSnippetKeys = string.Join(';', composed.SnippetKeys);
-                state.ConversationPhase = "opening";
+
+                // Phase progression
+                state.ConversationPhase = currentPhase.Equals("opening", StringComparison.OrdinalIgnoreCase)
+                    ? "middle"
+                    : currentPhase.Equals("middle", StringComparison.OrdinalIgnoreCase)
+                        ? "closing"
+                        : "closing";
+
                 state.UpdatedUtc = DateTime.UtcNow;
                 _db.RunDialogueStates.Update(state);
 

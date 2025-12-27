@@ -108,7 +108,8 @@ public sealed class RunService
             DifficultyKey = difficulty.Key,
             EndlessEnabled = difficulty.IsEndless,
             MaxRooms = difficulty.IsEndless ? null : difficulty.MaxRooms,
-            EnabledLorePacks = new List<string> { "cosmic-horror" },
+            // Default packs can be tuned later via UI; keep cosmic-horror always on.
+            EnabledLorePacks = new List<string> { "cosmic-horror", "lovecraft", "zork", "undertale" },
             DialogueSeedOffset = 17,
             CreatedUtc = DateTime.UtcNow,
             UpdatedUtc = DateTime.UtcNow
@@ -283,10 +284,16 @@ public sealed class RunService
         await new FrontierExpansionService(_db, new EndlessRoomGenerator())
             .EnsureFrontierRingAsync(run, cancellationToken);
 
-        // Sanity drift based on danger
+        // Sanity drift based on danger (scaled by difficulty + depth)
         var nextRoom = await GetCurrentRoomAsync(run, cancellationToken);
         if (nextRoom is not null && run.Sanity > 0 && nextRoom.DangerRating >= 2)
-            run.Sanity = Math.Max(0, run.Sanity - 1);
+        {
+            var diff = await new DifficultyService(_db).GetOrDefaultAsync(run.DifficultyKey, cancellationToken);
+            var depthFactor = 1.0f + (nextRoom.Depth * 0.03f);
+            var scaled = diff.SanityDrainMultiplier * depthFactor;
+            var drain = Math.Clamp((int)MathF.Ceiling(1.0f * scaled), 1, 5);
+            run.Sanity = Math.Max(0, run.Sanity - drain);
+        }
 
         // Creepy message chance inversely proportional to sanity
         var rng = new Random(run.Seed + run.Turn);
@@ -641,8 +648,16 @@ public sealed class RunService
 
         var rng = new Random(HashCode.Combine(run.Seed, run.Turn, run.CurrentRoomId.GetHashCode()));
 
-        // 35% chance for an encounter.
-        if (rng.NextDouble() > 0.35)
+        var room = await GetCurrentRoomAsync(run, cancellationToken);
+        var depth = room?.Depth ?? 0;
+        var diff = await new DifficultyService(_db).GetOrDefaultAsync(run.DifficultyKey, cancellationToken);
+
+        // Base 35%, scaled by difficulty and depth.
+        var baseChance = 0.35;
+        var depthBonus = Math.Clamp(depth * 0.015, 0.0, 0.35); // up to +35%
+        var chance = Math.Clamp(baseChance * diff.EnemySpawnMultiplier + depthBonus, 0.05, 0.90);
+
+        if (rng.NextDouble() > chance)
             return (null, null);
 
         var isEnemy = rng.NextDouble() < 0.55;

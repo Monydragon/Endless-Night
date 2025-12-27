@@ -38,9 +38,15 @@ public sealed class EndlessRoomGenerator
             RoomTags = tags
         };
 
-        // Very small amount of deterministic object seeding (expanded later)
+        // Deterministic object/loot seeding, scaled by difficulty and depth.
+        // We don't have the loot multiplier in this signature yet; encode simple scaling via a tag.
+        // FrontierExpansionService passes difficulty scaling via dangerScale today; we'll pass lootScale next.
+        var baseItemChance = 0.18;
+        var depthLootPenalty = Math.Clamp(depth * 0.004, 0.0, 0.10); // deeper = slightly fewer freebies
+        var itemChance = Math.Clamp(baseItemChance - depthLootPenalty, 0.05, 0.30);
+
         var objects = new List<WorldObjectInstance>();
-        if (rng.NextDouble() < 0.18)
+        if (rng.NextDouble() < itemChance)
         {
             objects.Add(new WorldObjectInstance
             {
@@ -78,14 +84,17 @@ public sealed class EndlessRoomGenerator
         if (depth >= 5) tags.Add("deep");
 
         // Lore packs influence flavor tags.
+        // Increase odds as danger/depth climb so references become more prominent under pressure.
+        var pressure = Math.Clamp((danger * 0.08) + (depth * 0.02), 0.0, 0.65);
+
         if (enabledLorePacks.Any(p => p.Equals("lovecraft", StringComparison.OrdinalIgnoreCase)))
-            if (rng.NextDouble() < 0.35 + danger * 0.05) tags.Add("eldritch");
+            if (rng.NextDouble() < 0.25 + pressure) tags.Add("eldritch");
 
         if (enabledLorePacks.Any(p => p.Equals("zork", StringComparison.OrdinalIgnoreCase)))
-            if (rng.NextDouble() < 0.25 + danger * 0.03) tags.Add("zorkish");
+            if (rng.NextDouble() < 0.15 + pressure * 0.6) tags.Add("zorkish");
 
         if (enabledLorePacks.Any(p => p.Equals("undertale", StringComparison.OrdinalIgnoreCase)))
-            if (rng.NextDouble() < 0.18 + (danger <= 1 ? 0.08 : 0.0)) tags.Add("undertaleish");
+            if (rng.NextDouble() < 0.10 + Math.Clamp(0.25 - pressure, 0.0, 0.25)) tags.Add("undertaleish");
 
         // Environmental tags.
         var env = new[] { "dust", "echoes", "stone", "cold", "whispers", "damp", "moths" };

@@ -11,6 +11,11 @@ public sealed class RoomEventLog : IRunScoped
 
     public required Guid RunId { get; set; }
 
+    /// <summary>
+    /// Optional actor associated with this event (e.g. procedural dialogue, encounters).
+    /// </summary>
+    public Guid? ActorId { get; set; }
+
     public int Turn { get; set; }
 
     public required string EventType { get; set; }

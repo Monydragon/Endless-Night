@@ -142,6 +142,8 @@ public sealed class SqliteDbContext : DbContext
             .ValueGeneratedNever();
         modelBuilder.Entity<RoomEventLog>()
             .HasIndex(x => new { x.RunId, x.Turn });
+        modelBuilder.Entity<RoomEventLog>()
+            .HasIndex(x => new { x.RunId, x.ActorId });
 
         // DialogueNode
         modelBuilder.Entity<DialogueNode>().HasKey(x => x.Id);

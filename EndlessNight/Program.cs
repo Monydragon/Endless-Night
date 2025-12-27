@@ -673,6 +673,15 @@ internal static class Program
                 return;
 
             AnsiConsole.Clear();
+
+            // Procedural 'whisper' line (non-LLM), if present.
+            var whisper = await runService.GetLatestProceduralDialogueForActorAsync(run, actor.Id);
+            if (!string.IsNullOrWhiteSpace(whisper))
+            {
+                AnsiConsole.MarkupLine($"[italic orange3]{EscapeMarkup(whisper)}[/]");
+                AnsiConsole.WriteLine();
+            }
+
             AnsiConsole.Write(new Rule($"[bold]{EscapeMarkup(node.Speaker)}[/]").RuleStyle("grey").Centered());
             AnsiConsole.MarkupLine($"{EscapeMarkup(node.Text)}");
             AnsiConsole.WriteLine();

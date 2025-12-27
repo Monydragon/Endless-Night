@@ -769,6 +769,7 @@ public sealed class RunService
                 {
                     Id = Guid.NewGuid(),
                     RunId = run.RunId,
+                    ActorId = actor.Id,
                     Turn = run.Turn,
                     EventType = "dialogue.procedural",
                     Message = composed.Text,
@@ -1043,6 +1044,29 @@ public sealed class RunService
         await SaveRunAsync(run, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return (true, false, null);
+    }
+
+    public async Task<string?> GetLatestProceduralDialogueForActorAsync(RunState run, Guid actorId,
+        CancellationToken cancellationToken = default)
+    {
+        var evt = await _db.RoomEventLogs
+            .Where(e => e.RunId == run.RunId && e.ActorId == actorId)
+            .Where(e => e.EventType == "dialogue.procedural")
+            .OrderByDescending(e => e.CreatedUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (evt is not null && !string.IsNullOrWhiteSpace(evt.Message))
+            return evt.Message;
+
+        // Fallback: if we stored snippet keys but didn't log the message (shouldn't happen), we can return the keys.
+        var state = await _db.RunDialogueStates
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == actorId, cancellationToken);
+
+        if (state is null || string.IsNullOrWhiteSpace(state.LastComposedSnippetKeys))
+            return null;
+
+        return $"[{state.LastComposedSnippetKeys}]";
     }
 
     private static bool IsChoiceAvailable(RunState run, DialogueChoice choice)

@@ -41,5 +41,14 @@ public sealed class DialogueChoice : IEntity
     /// Optional: pacify the actor (enemy-only).
     /// </summary>
     public bool PacifyTarget { get; set; }
-}
 
+    /// <summary>
+    /// Optional: grant an item to the player when this choice is taken.
+    /// </summary>
+    public string? GrantItemKey { get; set; }
+
+    /// <summary>
+    /// Quantity for GrantItemKey. Defaults to 1 when GrantItemKey is set.
+    /// </summary>
+    public int GrantItemQuantity { get; set; }
+}

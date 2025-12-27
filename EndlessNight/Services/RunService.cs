@@ -779,6 +779,23 @@ public sealed class RunService
         run.Health += choice.HealthDelta;
         run.Morality += choice.MoralityDelta;
 
+        // Optional: grant an item.
+        if (!string.IsNullOrWhiteSpace(choice.GrantItemKey))
+        {
+            var qty = choice.GrantItemQuantity <= 0 ? 1 : choice.GrantItemQuantity;
+            await AddToInventoryAsync(run, choice.GrantItemKey, qty, cancellationToken);
+
+            _db.RoomEventLogs.Add(new RoomEventLog
+            {
+                Id = Guid.NewGuid(),
+                RunId = run.RunId,
+                Turn = run.Turn,
+                EventType = "dialogue.grantItem",
+                Message = $"You receive: {choice.GrantItemKey} x{qty}.",
+                CreatedUtc = DateTime.UtcNow
+            });
+        }
+
         if (choice.RevealDisposition is not null)
             actor.Disposition = choice.RevealDisposition.Value;
 

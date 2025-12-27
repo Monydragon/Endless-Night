@@ -69,9 +69,9 @@ public sealed class EndlessRoomGenerator
         // Build loot table for this room.
         var table = BuildLootTable();
 
-        // Deterministic guarantee: once pressure is non-trivial, ensure at least one lore-pack item is possible.
-        // This keeps tests stable without making every room a reference fest.
-        var guaranteeLoreItem = pressure >= 0.12 && enabledLorePacks.Count > 0;
+        // Deterministic guarantee: if lore packs are enabled, ensure at least one lore-pack item is possible.
+        // This keeps tests stable while still allowing randomness for the rest of the pool.
+        var guaranteeLoreItem = enabledLorePacks.Count > 0;
         var loreGuaranteed = false;
 
         for (var r = 0; r < rolls; r++)

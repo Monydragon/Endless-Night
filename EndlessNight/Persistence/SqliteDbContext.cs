@@ -154,6 +154,7 @@ public sealed class SqliteDbContext : DbContext
             .Property(x => x.Id)
             .ValueGeneratedNever();
         modelBuilder.Entity<DialogueChoice>().HasIndex(x => x.FromNodeKey);
+        // GrantItemKey/GrantItemQuantity are simple scalar columns.
 
         // RunDialogueState
         modelBuilder.Entity<RunDialogueState>().HasKey(x => x.Id);

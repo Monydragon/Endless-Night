@@ -435,7 +435,9 @@ public sealed class Seeder
             Text = "Accept help.",
             ToNodeKey = null,
             HealthDelta = 10,
-            MoralityDelta = 1
+            MoralityDelta = 1,
+            GrantItemKey = "bandage",
+            GrantItemQuantity = 1
         }, cancellationToken);
 
         await UpsertDialogueChoiceAsync(new DialogueChoice
@@ -540,6 +542,8 @@ public sealed class Seeder
         existing.MoralityDelta = choice.MoralityDelta;
         existing.RevealDisposition = choice.RevealDisposition;
         existing.PacifyTarget = choice.PacifyTarget;
+        existing.GrantItemKey = choice.GrantItemKey;
+        existing.GrantItemQuantity = choice.GrantItemQuantity;
         _db.DialogueChoices.Update(existing);
     }
 }

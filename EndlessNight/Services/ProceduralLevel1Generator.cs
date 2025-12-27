@@ -25,7 +25,9 @@ public sealed class ProceduralLevel1Generator
 
         for (var i = 0; i < roomCount; i++)
         {
-            var roomId = Guid.NewGuid();
+            // RoomId must be deterministic for a given run seed so that frontier expansion remains deterministic.
+            // (FrontierExpansionService uses CurrentRoomId in its RNG seed.)
+            var roomId = DeterministicGuid(runId, "room", i);
 
             var (name, desc, danger) = i switch
             {
@@ -281,5 +283,17 @@ public sealed class ProceduralLevel1Generator
             "Ashes", "Murmurs", "Echoes", "Regret", "Shadows", "Old Names", "Forgotten Songs"
         };
         return suffixes[rng.Next(0, suffixes.Length)];
+    }
+
+    private static Guid DeterministicGuid(Guid runId, string scope, int index)
+    {
+        // Use a stable hash -> GUID mapping; good enough for deterministic testability.
+        var bytes = new byte[16];
+        var hash = HashCode.Combine(runId, scope, index);
+        BitConverter.GetBytes(hash).CopyTo(bytes, 0);
+        BitConverter.GetBytes(HashCode.Combine(hash, index * 31)).CopyTo(bytes, 4);
+        BitConverter.GetBytes(HashCode.Combine(hash, scope.Length)).CopyTo(bytes, 8);
+        BitConverter.GetBytes(HashCode.Combine(hash, 0x51ED)).CopyTo(bytes, 12);
+        return new Guid(bytes);
     }
 }

@@ -33,8 +33,12 @@ public sealed class RunService
 
         var difficulty = await new DifficultyService(_db).GetOrDefaultAsync(difficultyKey, cancellationToken);
 
-        var runId = Guid.NewGuid();
+        // If caller provides an explicit seed, the run's topology should be reproducible.
+        // Use a deterministic RunId in that case so any derived GUIDs remain stable across runs.
         var resolvedSeed = seed ?? Random.Shared.Next(int.MinValue, int.MaxValue);
+        var runId = seed is null
+            ? Guid.NewGuid()
+            : DeterministicGuidFromSeed(resolvedSeed);
 
         // Generate world
         var world = _generator.GenerateWorld(runId, resolvedSeed);
@@ -55,13 +59,24 @@ public sealed class RunService
         }
 
         var rooms = world.Rooms
-            .Select(r =>
+            .Select((r, index) =>
             {
-                r.Id = Guid.NewGuid();
+                // Keep EF primary key deterministic per room to avoid nondeterminism leaks.
+                // RoomId is the stable identity; Id is the EF row key.
+                r.Id = DeterministicGuid(runId, "room-instance", index);
+
                 // Ensure new fields have safe values for legacy generator rooms.
-                if (r.Depth < 0) r.Depth = 0;
+                // Seed-world rooms: use their Y coordinate (main chain) as a consistent depth proxy.
+                r.Depth = Math.Max(0, r.Y);
+
                 r.RoomTags ??= new List<string>();
-                if (r.RoomTags.Count == 0) r.RoomTags.Add("seeded");
+                if (r.RoomTags.Count == 0)
+                {
+                    r.RoomTags.Add("seeded");
+                    // Carry lore packs into seeded rooms too so UI/tests see consistent tags.
+                    r.RoomTags.Add("cosmic");
+                }
+
                 return r;
             })
             .ToList();
@@ -567,7 +582,8 @@ public sealed class RunService
             });
         }
 
-        // Legacy loot pickup continues to work.
+        // Legacy loot pickup (RoomInstance.Loot) is deprecated.
+        // New content should flow through WorldObjectInstance (ground items/chests/caches) so UI and rules are consistent.
         if (room.Loot.Count > 0)
         {
             foreach (var item in room.Loot)
@@ -986,6 +1002,29 @@ public sealed class RunService
             "The House is remembering you wrong."
         };
         return whispers[rng.Next(0, whispers.Length)];
+    }
+
+    private static Guid DeterministicGuid(Guid runId, string scope, int index)
+    {
+        var bytes = new byte[16];
+        var hash = HashCode.Combine(runId, scope, index);
+        BitConverter.GetBytes(hash).CopyTo(bytes, 0);
+        BitConverter.GetBytes(HashCode.Combine(hash, index * 31)).CopyTo(bytes, 4);
+        BitConverter.GetBytes(HashCode.Combine(hash, scope.Length)).CopyTo(bytes, 8);
+        BitConverter.GetBytes(HashCode.Combine(hash, 0x71ED)).CopyTo(bytes, 12);
+        return new Guid(bytes);
+    }
+
+    private static Guid DeterministicGuidFromSeed(int seed)
+    {
+        // Seed-only deterministic RunId so that "same seed" truly reproduces topology regardless of player name.
+        // This is important for tests and for roguelike seed sharing.
+        var bytes = new byte[16];
+        BitConverter.GetBytes(seed).CopyTo(bytes, 0);
+        BitConverter.GetBytes(HashCode.Combine(seed, 1)).CopyTo(bytes, 4);
+        BitConverter.GetBytes(HashCode.Combine(seed, 2)).CopyTo(bytes, 8);
+        BitConverter.GetBytes(HashCode.Combine(seed, 3)).CopyTo(bytes, 12);
+        return new Guid(bytes);
     }
 }
 

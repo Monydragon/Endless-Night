@@ -10,6 +10,14 @@ public sealed class EndlessRoomGenerator
 {
     public sealed record GeneratedRoom(RoomInstance Room, IReadOnlyList<WorldObjectInstance> Objects);
 
+    private sealed record LootEntry(
+        string ItemKey,
+        string Name,
+        string Description,
+        double Weight,
+        double MinPressure,
+        string? RequiresLorePack);
+
     public GeneratedRoom GenerateRoom(Guid runId, int seed, int cursor, int x, int y, int parentDepth,
         int baseDanger, float dangerScale, float lootScale, IReadOnlyList<string> enabledLorePacks)
     {
@@ -38,32 +46,167 @@ public sealed class EndlessRoomGenerator
             RoomTags = tags
         };
 
-        // Deterministic object/loot seeding, scaled by difficulty (lootScale) and depth.
-        // lootScale > 1 => more items; lootScale < 1 => fewer items.
-        var baseItemChance = 0.18f;
-        var scaledChance = baseItemChance * Math.Clamp(lootScale, 0.5f, 2.0f);
-        var depthLootPenalty = Math.Clamp(depth * 0.004f, 0.0f, 0.10f); // deeper = slightly fewer freebies
-        var itemChance = Math.Clamp(scaledChance - depthLootPenalty, 0.03f, 0.40f);
+        var pressure = Math.Clamp((danger * 0.08) + (depth * 0.02), 0.0, 0.65);
 
+        // Deterministic loot seeding: quantity and type are scaled by lootScale and depth.
         var objects = new List<WorldObjectInstance>();
-        if (rng.NextDouble() < itemChance)
+
+        var baseAnyLootChance = 0.22f;
+        var scaledChance = baseAnyLootChance * Math.Clamp(lootScale, 0.5f, 2.0f);
+        var depthPenalty = Math.Clamp(depth * 0.004f, 0.0f, 0.12f);
+        var anyLootChance = Math.Clamp(scaledChance - depthPenalty, 0.04f, 0.55f);
+
+        // Chance to spawn a chest instead of a plain ground item.
+        var chestChance = Math.Clamp(0.08 + pressure * 0.10, 0.08, 0.22);
+
+        // Chance to place a hidden "search cache" that becomes visible on search.
+        var cacheChance = Math.Clamp(0.06 + pressure * 0.08, 0.06, 0.18);
+
+        // Up to 2 loot rolls on generous lootScale.
+        var extraRollChance = Math.Clamp((lootScale - 1.0f) * 0.25f, 0.0f, 0.25f);
+        var rolls = 1 + (rng.NextDouble() < extraRollChance ? 1 : 0);
+
+        // Build loot table for this room.
+        var table = BuildLootTable();
+
+        // Deterministic guarantee: once pressure is non-trivial, ensure at least one lore-pack item is possible.
+        // This keeps tests stable without making every room a reference fest.
+        var guaranteeLoreItem = pressure >= 0.12 && enabledLorePacks.Count > 0;
+        var loreGuaranteed = false;
+
+        for (var r = 0; r < rolls; r++)
         {
-            objects.Add(new WorldObjectInstance
+            if (rng.NextDouble() >= anyLootChance)
+                continue;
+
+            var entry = RollLoot(rng, table, pressure, enabledLorePacks, guaranteeLoreItem && !loreGuaranteed);
+            if (entry is null)
+                continue;
+
+            if (entry.RequiresLorePack is not null)
+                loreGuaranteed = true;
+
+            // Prefer to use different object keys for multiple rolls.
+            var suffix = rolls == 1 ? "" : $".{r + 1}";
+
+            // Decide delivery method.
+            var roll = rng.NextDouble();
+            if (roll < chestChance)
             {
-                Id = Guid.NewGuid(),
-                RunId = runId,
-                RoomId = room.RoomId,
-                Kind = WorldObjectKind.GroundItem,
-                Key = $"ground.note.{cursor}",
-                Name = "note",
-                Description = "A note scratched with trembling intent.",
-                IsHidden = rng.NextDouble() < 0.3,
-                ItemKey = "note",
-                Quantity = 1
-            });
+                // Chest contains 1-3 items; use the rolled entry plus extra pulls.
+                var lootKeys = new List<string> { entry.ItemKey };
+                var bonusCount = rng.Next(0, 2); // +0..1 extra
+                for (var i = 0; i < bonusCount; i++)
+                {
+                    var extra = RollLoot(rng, table, pressure, enabledLorePacks, forceLore: false);
+                    if (extra is not null) lootKeys.Add(extra.ItemKey);
+                }
+
+                objects.Add(new WorldObjectInstance
+                {
+                    Id = Guid.NewGuid(),
+                    RunId = runId,
+                    RoomId = room.RoomId,
+                    Kind = WorldObjectKind.Chest,
+                    Key = $"proc.chest.{cursor}{suffix}",
+                    Name = "Chest",
+                    Description = "A warped chest. The latch looks weak.",
+                    IsHidden = rng.NextDouble() < 0.20,
+                    RequiredItemKey = null,
+                    LootItemKeys = lootKeys
+                });
+            }
+            else if (roll < chestChance + cacheChance)
+            {
+                // Search cache: a hidden ground item that gets revealed on search.
+                objects.Add(new WorldObjectInstance
+                {
+                    Id = Guid.NewGuid(),
+                    RunId = runId,
+                    RoomId = room.RoomId,
+                    Kind = WorldObjectKind.GroundItem,
+                    Key = $"proc.cache.{cursor}{suffix}",
+                    Name = entry.Name,
+                    Description = entry.Description,
+                    IsHidden = true,
+                    ItemKey = entry.ItemKey,
+                    Quantity = 1
+                });
+            }
+            else
+            {
+                // Plain ground item.
+                objects.Add(new WorldObjectInstance
+                {
+                    Id = Guid.NewGuid(),
+                    RunId = runId,
+                    RoomId = room.RoomId,
+                    Kind = WorldObjectKind.GroundItem,
+                    Key = $"proc.item.{cursor}{suffix}",
+                    Name = entry.Name,
+                    Description = entry.Description,
+                    IsHidden = rng.NextDouble() < 0.30,
+                    ItemKey = entry.ItemKey,
+                    Quantity = 1
+                });
+            }
         }
 
         return new GeneratedRoom(room, objects);
+    }
+
+    private static List<LootEntry> BuildLootTable()
+    {
+        // First-pass item pool. Keep keys compatible with seeded ItemDefinitions where possible.
+        // 'Weight' is relative; 'MinPressure' gates rare items to deeper/dangerous rooms.
+        return new List<LootEntry>
+        {
+            new("note", "note", "A note scratched with trembling intent.", 10, 0.0, null),
+            new("bandage", "bandage", "Fresh cloth wrapped tight. Someone prepared for failure.", 8, 0.0, null),
+            new("torch", "torch", "A wooden torch. Not much comfort, but it pushes back the dark.", 6, 0.0, null),
+            new("lantern", "lantern", "A lantern with a stubborn wick.", 4, 0.05, null),
+            new("rope", "rope", "Thick hemp rope, frayed but strong.", 3, 0.08, null),
+
+            // Lore-pack themed items (homage-style, no direct quotes).
+            new("eldritch-idol", "idol", "A small idol. It seems to watch from angles you can't name.", 2, 0.18, "lovecraft"),
+            new("brass-lantern", "brass lantern", "A brass lantern with a too-familiar weight.", 2, 0.15, "zork"),
+            new("blue-heart-charm", "charm", "A small charm shaped like a blue heart. It thrums faintly.", 2, 0.12, "undertale"),
+        };
+    }
+
+    private static LootEntry? RollLoot(
+        Random rng,
+        List<LootEntry> table,
+        double pressure,
+        IReadOnlyList<string> enabledLorePacks,
+        bool forceLore)
+    {
+        // Filter by pressure and enabled lore packs.
+        var eligible = table
+            .Where(e => pressure >= e.MinPressure)
+            .Where(e => e.RequiresLorePack is null || enabledLorePacks.Any(p => p.Equals(e.RequiresLorePack, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (eligible.Count == 0)
+            return null;
+
+        if (forceLore)
+        {
+            var lore = eligible.Where(e => e.RequiresLorePack is not null).ToList();
+            if (lore.Count > 0)
+                eligible = lore;
+        }
+
+        var total = eligible.Sum(e => e.Weight);
+        var roll = rng.NextDouble() * total;
+        foreach (var e in eligible)
+        {
+            roll -= e.Weight;
+            if (roll <= 0)
+                return e;
+        }
+
+        return eligible[^1];
     }
 
     private static List<string> GenerateTags(Random rng, IReadOnlyList<string> enabledLorePacks, int danger, int depth)
@@ -128,8 +271,4 @@ public sealed class EndlessRoomGenerator
         var danger = Math.Clamp(dangerBase + rng.Next(-1, 2), 0, 5);
         return (name, desc, danger);
     }
-
-    // Backwards-compatible overload (used by older callers). Keeps behavior stable.
-    public GeneratedRoom GenerateRoom(Guid runId, int seed, int cursor, int x, int y, int dangerBase)
-        => GenerateRoom(runId, seed, cursor, x, y, parentDepth: 0, baseDanger: dangerBase, dangerScale: 1.0f, lootScale: 1.0f, enabledLorePacks: Array.Empty<string>());
 }

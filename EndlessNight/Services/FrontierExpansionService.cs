@@ -93,6 +93,11 @@ public sealed class FrontierExpansionService
                 // Otherwise generate a new room.
                 var dangerBase = Math.Clamp(room.DangerRating + (dist >= 1 ? 1 : 0), 0, 5);
 
+                // Ensure config is persisted so EnabledLorePacks is available and stable.
+                // (In-memory tests can observe generation before another SaveChanges happens.)
+                _db.RunConfigs.Update(cfg);
+                await _db.SaveChangesAsync(cancellationToken);
+
                 // Difficulty influences scaling.
                 var difficulty = await _db.DifficultyProfiles.FirstOrDefaultAsync(d => d.Key == run.DifficultyKey, cancellationToken);
                 var dangerScale = difficulty?.EnemySpawnMultiplier ?? 1.0f;
@@ -113,7 +118,8 @@ public sealed class FrontierExpansionService
                 cfg.WorldGenCursor++;
                 cfg.UpdatedUtc = DateTime.UtcNow;
 
-                gen.Room.Id = Guid.NewGuid();
+                // Deterministic EF row key stabilizes ordering and removes GUID nondeterminism.
+                gen.Room.Id = DeterministicGuid(run.RunId, "frontier-room", cfg.WorldGenCursor);
                 await _db.RoomInstances.AddAsync(gen.Room, cancellationToken);
 
                 foreach (var obj in gen.Objects)
@@ -180,4 +186,15 @@ public sealed class FrontierExpansionService
             Direction.West => Direction.East,
             _ => dir
         };
+
+    private static Guid DeterministicGuid(Guid runId, string scope, int index)
+    {
+        var bytes = new byte[16];
+        var hash = HashCode.Combine(runId, scope, index);
+        BitConverter.GetBytes(hash).CopyTo(bytes, 0);
+        BitConverter.GetBytes(HashCode.Combine(hash, index * 31)).CopyTo(bytes, 4);
+        BitConverter.GetBytes(HashCode.Combine(hash, scope.Length)).CopyTo(bytes, 8);
+        BitConverter.GetBytes(HashCode.Combine(hash, 0x61ED)).CopyTo(bytes, 12);
+        return new Guid(bytes);
+    }
 }

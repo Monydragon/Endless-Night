@@ -144,4 +144,36 @@ public sealed class EndlessFrontierRingTests
         // Casual has higher LootMultiplier than Very Hard (see Seeder), so it should generate >= objects.
         Assert.That(objsEasy, Is.GreaterThanOrEqualTo(objsHard));
     }
+
+    [Test]
+    public async Task LorePacks_ShouldInfluenceLootPool_WhenEnabled()
+    {
+        using var db = CreateDbAndSeed();
+        var svc = new RunService(db, new ProceduralLevel1Generator());
+
+        // Use a seed and endless mode to generate enough rooms.
+        var run = await svc.CreateNewRunAsync("Lore", seed: 12121, difficultyKey: "endless");
+
+        // Move around a bit to force procedural generation.
+        for (var i = 0; i < 10; i++)
+        {
+            var room = await svc.GetCurrentRoomAsync(run);
+            Assert.That(room, Is.Not.Null);
+            var dir = room!.Exits.Keys.OrderBy(d => d).First();
+            var (ok, err) = await svc.MoveAsync(run, dir);
+            Assert.That(ok, Is.True, err);
+        }
+
+        var objs = await db.WorldObjects
+            .Where(o => o.RunId == run.RunId)
+            .ToListAsync();
+
+        // Lore pack item keys should be eligible.
+        var allKeys = objs.SelectMany(o => o.LootItemKeys.Append(o.ItemKey).Where(k => !string.IsNullOrWhiteSpace(k)))
+            .Select(k => k!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // At least one lore item should show up with enough generation.
+        Assert.That(allKeys.Overlaps(new[] { "eldritch-idol", "brass-lantern", "blue-heart-charm" }), Is.True);
+    }
 }

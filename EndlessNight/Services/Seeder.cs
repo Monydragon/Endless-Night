@@ -19,6 +19,7 @@ public sealed class Seeder
     {
         await SeedLegacyMapAsync(cancellationToken);
         await SeedItemDefinitionsAsync(cancellationToken);
+        await SeedDifficultyProfilesAsync(cancellationToken);
         await SeedDialogueAsync(cancellationToken);
         await SeedStoryChaptersAsync(cancellationToken);
 
@@ -166,6 +167,149 @@ public sealed class Seeder
             Description = "Thick hemp rope, frayed but strong. It remembers holding things.",
             Tags = new List<string> { "tool" }
         }, cancellationToken);
+    }
+
+    private async Task SeedDifficultyProfilesAsync(CancellationToken cancellationToken)
+    {
+        // Keys must be stable; values are tweakable.
+        var profiles = new List<DifficultyProfile>
+        {
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "casual",
+                Name = "Casual",
+                Description = "Story-first. Generous resources. Minimal pressure.",
+                StartingHealth = 100,
+                StartingSanity = 100,
+                LootMultiplier = 1.25f,
+                EnemySpawnMultiplier = 0.75f,
+                SanityDrainMultiplier = 0.75f,
+                MinRooms = 7,
+                MaxRooms = 9,
+                IsEndless = false
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "novice",
+                Name = "Novice",
+                Description = "Forgiving, but the Night still bites.",
+                StartingHealth = 100,
+                StartingSanity = 100,
+                LootMultiplier = 1.15f,
+                EnemySpawnMultiplier = 0.9f,
+                SanityDrainMultiplier = 0.9f,
+                MinRooms = 7,
+                MaxRooms = 10,
+                IsEndless = false
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "easy",
+                Name = "Easy",
+                Description = "A gentle descent. Good for learning.",
+                StartingHealth = 100,
+                StartingSanity = 100,
+                LootMultiplier = 1.05f,
+                EnemySpawnMultiplier = 1.0f,
+                SanityDrainMultiplier = 1.0f,
+                MinRooms = 7,
+                MaxRooms = 10,
+                IsEndless = false
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "normal",
+                Name = "Normal",
+                Description = "The intended experience.",
+                StartingHealth = 100,
+                StartingSanity = 100,
+                LootMultiplier = 1.0f,
+                EnemySpawnMultiplier = 1.0f,
+                SanityDrainMultiplier = 1.0f,
+                MinRooms = 7,
+                MaxRooms = 10,
+                IsEndless = false
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "challenging",
+                Name = "Challenging",
+                Description = "Sharper claws, slimmer margins.",
+                StartingHealth = 95,
+                StartingSanity = 95,
+                LootMultiplier = 0.95f,
+                EnemySpawnMultiplier = 1.15f,
+                SanityDrainMultiplier = 1.15f,
+                MinRooms = 8,
+                MaxRooms = 11,
+                IsEndless = false
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "hard",
+                Name = "Hard",
+                Description = "The House notices you.",
+                StartingHealth = 90,
+                StartingSanity = 90,
+                LootMultiplier = 0.9f,
+                EnemySpawnMultiplier = 1.3f,
+                SanityDrainMultiplier = 1.3f,
+                MinRooms = 8,
+                MaxRooms = 12,
+                IsEndless = false
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "very-hard",
+                Name = "Very Hard",
+                Description = "A slow grind of dread.",
+                StartingHealth = 85,
+                StartingSanity = 85,
+                LootMultiplier = 0.85f,
+                EnemySpawnMultiplier = 1.45f,
+                SanityDrainMultiplier = 1.45f,
+                MinRooms = 9,
+                MaxRooms = 13,
+                IsEndless = false
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "endless",
+                Name = "Endless",
+                Description = "No map edge. No mercy. No guarantee of return.",
+                StartingHealth = 90,
+                StartingSanity = 90,
+                LootMultiplier = 0.9f,
+                EnemySpawnMultiplier = 1.35f,
+                SanityDrainMultiplier = 1.35f,
+                MinRooms = 9,
+                MaxRooms = 14,
+                IsEndless = true
+            }
+        };
+
+        foreach (var p in profiles)
+        {
+            var existing = await _db.DifficultyProfiles.FirstOrDefaultAsync(x => x.Key == p.Key, cancellationToken);
+            if (existing is null)
+            {
+                _db.DifficultyProfiles.Add(p);
+            }
+            else
+            {
+                // Keep user-tuned values if they already exist; only fill missing description/name.
+                if (string.IsNullOrWhiteSpace(existing.Name)) existing.Name = p.Name;
+                if (string.IsNullOrWhiteSpace(existing.Description)) existing.Description = p.Description;
+            }
+        }
     }
 
     private async Task SeedDialogueAsync(CancellationToken cancellationToken)

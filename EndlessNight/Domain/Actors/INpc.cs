@@ -7,4 +7,4 @@ public interface INpc : IActor
     /// </summary>
     int Sanity { get; set; }
 }
-
+                                                                                                                                                                                                                                                                                             

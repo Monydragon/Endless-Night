@@ -34,5 +34,10 @@ public sealed class RunState : IEntity
     /// <summary>Which room instance the player is currently in.</summary>
     public required Guid CurrentRoomId { get; set; }
 
+    /// <summary>
+    /// Difficulty key used to configure this run (e.g. "casual", "normal", "hard", "endless").
+    /// </summary>
+    public string DifficultyKey { get; set; } = "normal";
+
     public DateTime UpdatedUtc { get; set; }
 }

@@ -21,17 +21,39 @@ public sealed class RunService
     }
 
     public Task<RunState> CreateNewRunAsync(string playerName, CancellationToken cancellationToken = default)
-        => CreateNewRunAsync(playerName, seed: null, cancellationToken);
+        => CreateNewRunAsync(playerName, seed: null, difficultyKey: null, cancellationToken);
 
     public async Task<RunState> CreateNewRunAsync(string playerName, int? seed, CancellationToken cancellationToken = default)
+        => await CreateNewRunAsync(playerName, seed, difficultyKey: null, cancellationToken);
+
+    public async Task<RunState> CreateNewRunAsync(string playerName, int? seed, string? difficultyKey,
+        CancellationToken cancellationToken = default)
     {
         playerName = NormalizePlayerName(playerName);
+
+        var difficulty = await new DifficultyService(_db).GetOrDefaultAsync(difficultyKey, cancellationToken);
 
         var runId = Guid.NewGuid();
         var resolvedSeed = seed ?? Random.Shared.Next(int.MinValue, int.MaxValue);
 
         // Generate world
         var world = _generator.GenerateWorld(runId, resolvedSeed);
+
+        // If difficulty constrains room count, apply a deterministic cut of the generated chunk
+        // for now (Milestone 2 will replace this with proper parameterized generation).
+        if (!difficulty.IsEndless)
+        {
+            var maxRooms = Math.Clamp(difficulty.MaxRooms, 4, world.Rooms.Count);
+            if (world.Rooms.Count > maxRooms)
+            {
+                var trimmedRooms = world.Rooms.Take(maxRooms).ToList();
+                // Filter objects to only those in kept rooms.
+                var keptRoomIds = trimmedRooms.Select(r => r.RoomId).ToHashSet();
+                var trimmedObjects = world.Objects.Where(o => keptRoomIds.Contains(o.RoomId)).ToList();
+                world = world with { Rooms = trimmedRooms, Objects = trimmedObjects };
+            }
+        }
+
         var rooms = world.Rooms
             .Select(r =>
             {
@@ -64,10 +86,11 @@ public sealed class RunService
             RunId = runId,
             Seed = resolvedSeed,
             Turn = 0,
-            Sanity = 100,
-            Health = 100,
+            Sanity = Math.Clamp(difficulty.StartingSanity, 0, 100),
+            Health = Math.Clamp(difficulty.StartingHealth, 0, 100),
             Morality = 0,
             CurrentRoomId = startRoomId,
+            DifficultyKey = difficulty.Key,
             UpdatedUtc = DateTime.UtcNow
         };
 

@@ -43,6 +43,9 @@ public sealed class SqliteDbContext : DbContext
     public DbSet<StoryChapter> StoryChapters => Set<StoryChapter>();
     public DbSet<RunStoryState> RunStoryStates => Set<RunStoryState>();
 
+    // Difficulty profiles (data-driven)
+    public DbSet<DifficultyProfile> DifficultyProfiles => Set<DifficultyProfile>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // MapDefinition
@@ -78,6 +81,13 @@ public sealed class SqliteDbContext : DbContext
         modelBuilder.Entity<ItemDefinition>()
             .Property(x => x.Tags)
             .HasConversion(new StringListJsonConverter());
+
+        // DifficultyProfile
+        modelBuilder.Entity<DifficultyProfile>().HasKey(x => x.Id);
+        modelBuilder.Entity<DifficultyProfile>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<DifficultyProfile>().HasIndex(x => x.Key).IsUnique();
 
         // RunState
         modelBuilder.Entity<RunState>().HasKey(x => x.Id);

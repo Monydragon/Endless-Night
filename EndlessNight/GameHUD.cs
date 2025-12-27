@@ -53,56 +53,49 @@ public static class GameHUD
         var healthBar = CreateBar(run.Health, 100, barWidth, healthColor);
         var sanityBar = CreateBar(run.Sanity, 100, barWidth, sanityColor);
 
-        // Keep it one line, tuned for narrow terminals.
+        // Keep it one line. Do NOT shorten labels.
         AnsiConsole.MarkupLine(
-            $"[bold red]HP[/]:{healthBar} [bold {healthColor}]{run.Health}[/]  " +
-            $"[bold magenta]SANITY[/]:{sanityBar} [bold {sanityColor}]{run.Sanity}[/]  " +
-            $"[bold yellow]MORALITY[/]:[boMonyld {moralityColor}]{moralitySymbol}{run.Morality}[/] {GetMoralityDescription(run.Morality)}  " +
-            $"[dim]T:{run.Turn}[/]"
+            $"[bold red]HP[/]: {healthBar} [bold {healthColor}]{run.Health}[/]  " +
+            $"[bold magenta]SANITY[/]: {sanityBar} [bold {sanityColor}]{run.Sanity}[/]  " +
+            $"[bold yellow]MORALITY[/]: [bold {moralityColor}]{moralitySymbol}{run.Morality}[/] {GetMoralityDescription(run.Morality)}  " +
+            $"[orange3]Turn:[/] [bold white]{run.Turn}[/]"
         );
     }
 
     private static void RenderRoomPanel(RoomInstance room, List<WorldObjectInstance>? visibleObjects)
     {
-        var roomColor = GetDangerColor(room.DangerRating);
+        // Panels/borders can tear in IDE consoles. Render a clean, borderless section instead.
+        var roomRule = new Rule("[cyan]ROOM[/]")
+            .RuleStyle("cyan");
+        roomRule.Justification = Justify.Left;
+        AnsiConsole.Write(roomRule);
 
-        // Build compact room content
-        var lines = new List<string>
-        {
-            $"[bold {roomColor}]{ControllerUI.EscapeMarkup(room.Name)}[/]",
-            $"[grey]{ControllerUI.EscapeMarkup(room.Description)}[/]"
-        };
+        var roomColor = GetDangerColor(room.DangerRating);
+        AnsiConsole.MarkupLine($"[bold {roomColor}]{ControllerUI.EscapeMarkup(room.Name)}[/]");
+        AnsiConsole.MarkupLine($"[orange3]{ControllerUI.EscapeMarkup(room.Description)}[/]");
 
         if (DebugMode)
         {
             var dangerBar = CreateBar(room.DangerRating, 5, 5, roomColor);
-            lines.Add($"[dim]Pos[/]: ({room.X},{room.Y})  [dim]Danger[/]: {dangerBar} [{roomColor}]{room.DangerRating}/5[/]  [dim]Searched[/]: {(room.HasBeenSearched ? "[green]Y[/]" : "[yellow]N[/]")}[/]");
+            AnsiConsole.MarkupLine(
+                $"[orange3]Pos[/]: [white]({room.X},{room.Y})[/]  " +
+                $"[orange3]Danger[/]: {dangerBar} [bold {roomColor}]{room.DangerRating}[/]/[bold white]5[/]  " +
+                $"[orange3]Searched[/]: {(room.HasBeenSearched ? "[bold green]Y[/]" : "[bold yellow]N[/]")}" 
+            );
         }
 
-        // Items in room (compact list, wrap-friendly)
         if (visibleObjects != null && visibleObjects.Count > 0)
         {
-            lines.Add("[bold yellow]Items[/]:");
+            AnsiConsole.MarkupLine("[bold yellow]Items[/]:");
             foreach (var obj in visibleObjects)
-            {
-                lines.Add($"  {GetObjectIcon(obj.Kind)} [white]{ControllerUI.EscapeMarkup(obj.Name)}[/] [dim]({GetObjectStatus(obj)})[/]");
-            }
+                AnsiConsole.MarkupLine($"  {GetObjectIcon(obj.Kind)} [white]{ControllerUI.EscapeMarkup(obj.Name)}[/] [orange3]({GetObjectStatus(obj)})[/]");
         }
         else
         {
-            lines.Add("[dim]Items[/]: none");
+            AnsiConsole.MarkupLine("[orange3]Items[/]: [white]none[/]");
         }
 
-        var panel = new Panel(string.Join("\n", lines))
-        {
-            Header = new PanelHeader("[cyan]ROOM[/]", Justify.Left),
-            Border = BoxBorder.Rounded,
-            BorderStyle = new Style(Color.Cyan),
-            Padding = new Padding(1, 0, 1, 0),
-            Expand = true
-        };
-
-        AnsiConsole.Write(panel);
+        AnsiConsole.WriteLine();
     }
 
     private static void RenderExitsAndAtmosphere(RoomInstance room, RunState run)
@@ -117,10 +110,9 @@ public static class GameHUD
         };
 
         var exitsText = room.Exits.Count == 0
-            ? "[red]Exits[/]: none"
-            : $"[white]Exits[/]: {string.Join(" | ", room.Exits.Keys.Select(d => $"[cyan]{d}[/]"))}";
+            ? "[red]Exits[/]: [white]none[/]"
+            : $"[white]Exits[/]: {string.Join(" | ", room.Exits.Keys.Select(d => $"[bold cyan]{d}[/]"))}";
 
-        // Avoid arrow glyphs here too for maximum font compatibility.
         AnsiConsole.MarkupLine($"{exitsText}  [italic {color}]{text}[/]");
     }
 
@@ -131,7 +123,7 @@ public static class GameHUD
         var emptyWidth = width - filledWidth;
         var filled = new string('█', Math.Max(0, filledWidth));
         var empty = new string('░', Math.Max(0, emptyWidth));
-        return $"[{color}]{filled}[/][dim]{empty}[/]";
+        return $"[{color}]{filled}[/][orange3]{empty}[/]";
     }
 
 
@@ -230,11 +222,11 @@ public static class GameHUD
     {
         if (controllerConnected)
         {
-            AnsiConsole.MarkupLine("[dim]Controller: [cyan]D-Pad/Left Stick[/] = Navigate | [green]A/X[/] = Select | [red]B/Circle[/] = Back[/]");
+            AnsiConsole.MarkupLine("[orange3]Controller:[/] [cyan]D-Pad/Left Stick[/] = Navigate | [green]A/X[/] = Select | [red]B/Circle[/] = Back");
         }
         else
         {
-            AnsiConsole.MarkupLine("[dim]Keyboard: [cyan]Arrow Keys[/] = Navigate | [green]Enter[/] = Select[/]");
+            AnsiConsole.MarkupLine("[orange3]Keyboard:[/] [cyan]Arrow Keys[/] = Navigate | [green]Enter[/] = Select");
         }
     }
 }

@@ -84,68 +84,57 @@ public static class ControllerMenu
     {
         AnsiConsole.Clear();
 
-        // Header (hints + title panel)
         GameHUD.ShowControllerHints(ControllerUI.IsControllerConnected);
         AnsiConsole.WriteLine();
 
-        var header = new Panel($"[bold white]{ControllerUI.EscapeMarkup(title)}[/]")
-        {
-            Border = BoxBorder.Rounded,
-            BorderStyle = new Style(Color.Cyan),
-            Padding = new Padding(1, 0, 1, 0)
-        };
-        AnsiConsole.Write(header);
-        AnsiConsole.WriteLine();
+        var rule = new Rule($"[bold white]{ControllerUI.EscapeMarkup(title)}[/]")
+            .RuleStyle("cyan");
+        rule.Justification = Justify.Left;
+        AnsiConsole.Write(rule);
 
         RenderMenuItems(items, selectedIndex);
     }
 
     private static void RenderMenuOnly(string title, List<(string option, string description)> items, int selectedIndex)
     {
-        // HUD already rendered by caller
         GameHUD.ShowControllerHints(ControllerUI.IsControllerConnected);
         AnsiConsole.WriteLine();
 
-        var header = new Panel($"[bold white]{ControllerUI.EscapeMarkup(title)}[/]")
-        {
-            Border = BoxBorder.Rounded,
-            BorderStyle = new Style(Color.Cyan),
-            Padding = new Padding(1, 0, 1, 0)
-        };
-        AnsiConsole.Write(header);
-        AnsiConsole.WriteLine();
+        var rule = new Rule($"[bold white]{ControllerUI.EscapeMarkup(title)}[/]")
+            .RuleStyle("cyan");
+        rule.Justification = Justify.Left;
+        AnsiConsole.Write(rule);
 
         RenderMenuItems(items, selectedIndex);
     }
 
     private static void RenderMenuItems(List<(string option, string description)> items, int selectedIndex)
     {
-        // Use a table for consistent alignment and zero broken borders.
+        // Compact list: one line per option, and a single description line for the selected item.
         var table = new Table()
             .Border(TableBorder.None)
-            .AddColumn(new TableColumn(string.Empty).NoWrap())
-            .AddColumn(new TableColumn("[dim]Description[/]").LeftAligned());
+            .AddColumn(new TableColumn(string.Empty).NoWrap());
 
         for (int i = 0; i < items.Count; i++)
         {
-            var (option, description) = items[i];
+            var (option, _) = items[i];
             var isSelected = i == selectedIndex;
 
-            var prefix = isSelected ? "[bold black on cyan] ► [/]" : "   ";
-            var optionCell = isSelected
-                ? $"[bold black on cyan]{ControllerUI.EscapeMarkup(option)}[/]"
-                : $"[cyan]{ControllerUI.EscapeMarkup(option)}[/]";
+            var row = isSelected
+                ? $"[bold black on cyan] ► {ControllerUI.EscapeMarkup(option)}[/]"
+                : $"[cyan]   {ControllerUI.EscapeMarkup(option)}[/]";
 
-            var descCell = string.IsNullOrWhiteSpace(description)
-                ? ""
-                : isSelected
-                    ? $"[dim cyan]{ControllerUI.EscapeMarkup(description)}[/]"
-                    : $"[dim]{ControllerUI.EscapeMarkup(description)}[/]";
-
-            table.AddRow(prefix + optionCell, descCell);
+            table.AddRow(row);
         }
 
         AnsiConsole.Write(table);
+
+        var selectedDesc = (selectedIndex >= 0 && selectedIndex < items.Count) ? items[selectedIndex].description : "";
+        if (!string.IsNullOrWhiteSpace(selectedDesc))
+        {
+            AnsiConsole.MarkupLine($"\n[dim]{ControllerUI.EscapeMarkup(selectedDesc)}[/]");
+        }
+
         AnsiConsole.WriteLine();
     }
 
@@ -228,4 +217,3 @@ public static class ControllerMenu
         Back
     }
 }
-

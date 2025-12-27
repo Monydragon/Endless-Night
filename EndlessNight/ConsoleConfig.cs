@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Configuration;
+using System.Runtime.Versioning;
 
 namespace EndlessNight;
 
@@ -104,7 +105,8 @@ public static class ConsoleConfig
         }
     }
 
-    private static void TrySetConsoleSize()
+    [SupportedOSPlatform("windows")]
+    private static void TrySetConsoleSizeWindows()
     {
         try
         {
@@ -128,6 +130,16 @@ public static class ConsoleConfig
                 // Final fallback: leave defaults
             }
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void TrySetConsoleSize()
+    {
+        // Console size mutators are only supported on Windows terminals.
+        if (!IsWindows)
+            return;
+
+        TrySetConsoleSizeWindows();
     }
 
     /// <summary>

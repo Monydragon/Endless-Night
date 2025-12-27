@@ -386,19 +386,10 @@ internal static class Program
             AnsiConsole.Clear();
 
             // Main menu decoration (riddle / vibe)
-            var riddle = new Panel(
-                    "[bold]A riddle from the dark:[/]\n\n" +
-                    "[italic]\"In a house with no windows, I still show you the way.\n" +
-                    "I speak in single words, yet I never lie.\n" +
-                    "Take me, and the night becomes a map.\"[/]\n\n" +
-                    "[dim]Type a name, choose a path, and listen for the parser in your bones.[/]")
-                {
-                    Header = new PanelHeader("[bold cyan]WELCOME[/]", Justify.Center),
-                    Border = BoxBorder.Rounded,
-                    BorderStyle = new Style(Color.Cyan),
-                    Padding = new Padding(2, 1, 2, 1)
-                };
-            AnsiConsole.Write(riddle);
+            AnsiConsole.Write(new Rule("[bold cyan]WELCOME[/]").RuleStyle("cyan").Centered());
+            AnsiConsole.MarkupLine("[bold]A riddle from the dark:[/]");
+            AnsiConsole.MarkupLine("[italic]\"In a house with no windows, I still show you the way.\nI speak in single words, yet I never lie.\nTake me, and the night becomes a map.\"[/]");
+            AnsiConsole.MarkupLine("[dim]Type a name, choose a path, and listen for the parser in your bones.[/]");
             AnsiConsole.WriteLine();
 
             AnsiConsole.MarkupLine("[dim]Tip: Try thinking like a classic text adventure: LOOK, TAKE, OPEN, USE...[/]");

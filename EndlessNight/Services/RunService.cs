@@ -134,6 +134,10 @@ public sealed class RunService
 
         await _db.SaveChangesAsync(cancellationToken);
 
+        // Pre-generate a small frontier ring for endless runs.
+        await new FrontierExpansionService(_db, new EndlessRoomGenerator())
+            .EnsureFrontierRingAsync(run, cancellationToken);
+
         return run;
     }
 
@@ -270,6 +274,10 @@ public sealed class RunService
 
         run.CurrentRoomId = nextRoomId;
         run.Turn++;
+
+        // Ensure frontier ring after entering the new room (endless mode only).
+        await new FrontierExpansionService(_db, new EndlessRoomGenerator())
+            .EnsureFrontierRingAsync(run, cancellationToken);
 
         // Sanity drift based on danger
         var nextRoom = await GetCurrentRoomAsync(run, cancellationToken);

@@ -40,7 +40,33 @@ public sealed class RunConfig : IEntity
     /// </summary>
     public int DialogueSeedOffset { get; set; } = 17;
 
+    /// <summary>
+    /// Generation ring radius measured in room steps from the player.
+    /// A radius of 1 means "always ensure all adjacent rooms exist".
+    /// </summary>
+    public int FrontierRingRadius { get; set; } = 1;
+
+    /// <summary>
+    /// Safety cap for background expansion per player action.
+    /// Prevents runaway generation when the graph is highly connected.
+    /// </summary>
+    public int FrontierMaxRoomsPerTurn { get; set; } = 6;
+
+    /// <summary>
+    /// Room generation cursor for deterministic streaming generation (incremented per generated room).
+    /// </summary>
+    public int WorldGenCursor { get; set; } = 0;
+
+    /// <summary>
+    /// Max slice of new exits per generated room.
+    /// </summary>
+    public int MaxNewExitsPerRoom { get; set; } = 3;
+
+    /// <summary>
+    /// Min slice of new exits per generated room.
+    /// </summary>
+    public int MinNewExitsPerRoom { get; set; } = 1;
+
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
 }
-

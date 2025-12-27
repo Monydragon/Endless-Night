@@ -11,7 +11,7 @@ public sealed class EndlessRoomGenerator
     public sealed record GeneratedRoom(RoomInstance Room, IReadOnlyList<WorldObjectInstance> Objects);
 
     public GeneratedRoom GenerateRoom(Guid runId, int seed, int cursor, int x, int y, int parentDepth,
-        int baseDanger, float dangerScale, IReadOnlyList<string> enabledLorePacks)
+        int baseDanger, float dangerScale, float lootScale, IReadOnlyList<string> enabledLorePacks)
     {
         // Cursor is included so generation is stable per run even when called at different times.
         var rng = new Random(HashCode.Combine(seed, cursor, x, y));
@@ -38,12 +38,12 @@ public sealed class EndlessRoomGenerator
             RoomTags = tags
         };
 
-        // Deterministic object/loot seeding, scaled by difficulty and depth.
-        // We don't have the loot multiplier in this signature yet; encode simple scaling via a tag.
-        // FrontierExpansionService passes difficulty scaling via dangerScale today; we'll pass lootScale next.
-        var baseItemChance = 0.18;
-        var depthLootPenalty = Math.Clamp(depth * 0.004, 0.0, 0.10); // deeper = slightly fewer freebies
-        var itemChance = Math.Clamp(baseItemChance - depthLootPenalty, 0.05, 0.30);
+        // Deterministic object/loot seeding, scaled by difficulty (lootScale) and depth.
+        // lootScale > 1 => more items; lootScale < 1 => fewer items.
+        var baseItemChance = 0.18f;
+        var scaledChance = baseItemChance * Math.Clamp(lootScale, 0.5f, 2.0f);
+        var depthLootPenalty = Math.Clamp(depth * 0.004f, 0.0f, 0.10f); // deeper = slightly fewer freebies
+        var itemChance = Math.Clamp(scaledChance - depthLootPenalty, 0.03f, 0.40f);
 
         var objects = new List<WorldObjectInstance>();
         if (rng.NextDouble() < itemChance)
@@ -131,5 +131,5 @@ public sealed class EndlessRoomGenerator
 
     // Backwards-compatible overload (used by older callers). Keeps behavior stable.
     public GeneratedRoom GenerateRoom(Guid runId, int seed, int cursor, int x, int y, int dangerBase)
-        => GenerateRoom(runId, seed, cursor, x, y, parentDepth: 0, baseDanger: dangerBase, dangerScale: 1.0f, enabledLorePacks: Array.Empty<string>());
+        => GenerateRoom(runId, seed, cursor, x, y, parentDepth: 0, baseDanger: dangerBase, dangerScale: 1.0f, lootScale: 1.0f, enabledLorePacks: Array.Empty<string>());
 }

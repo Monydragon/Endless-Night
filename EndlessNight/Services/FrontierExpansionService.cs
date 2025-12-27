@@ -96,6 +96,7 @@ public sealed class FrontierExpansionService
                 // Difficulty influences scaling.
                 var difficulty = await _db.DifficultyProfiles.FirstOrDefaultAsync(d => d.Key == run.DifficultyKey, cancellationToken);
                 var dangerScale = difficulty?.EnemySpawnMultiplier ?? 1.0f;
+                var lootScale = difficulty?.LootMultiplier ?? 1.0f;
 
                 var gen = _generator.GenerateRoom(
                     run.RunId,
@@ -106,6 +107,7 @@ public sealed class FrontierExpansionService
                     parentDepth: room.Depth,
                     baseDanger: dangerBase,
                     dangerScale: dangerScale,
+                    lootScale: lootScale,
                     enabledLorePacks: cfg.EnabledLorePacks
                 );
                 cfg.WorldGenCursor++;

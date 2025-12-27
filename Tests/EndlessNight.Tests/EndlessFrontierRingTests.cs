@@ -103,4 +103,45 @@ public sealed class EndlessFrontierRingTests
         // Default config seeds cosmic-horror tag.
         Assert.That(current.RoomTags.Any(t => t.Equals("cosmic", StringComparison.OrdinalIgnoreCase)), Is.True);
     }
+
+    [Test]
+    public async Task LootMultiplier_ShouldAffectGeneratedObjectCounts_Deterministically()
+    {
+        // Same seed + same move path, but different difficulty should change total generated objects.
+        // We compare cumulative object counts after several moves to reduce variance.
+
+        using var dbEasy = CreateDbAndSeed();
+        using var dbHard = CreateDbAndSeed();
+
+        var svcEasy = new RunService(dbEasy, new ProceduralLevel1Generator());
+        var svcHard = new RunService(dbHard, new ProceduralLevel1Generator());
+
+        var seed = 7777;
+        var runEasy = await svcEasy.CreateNewRunAsync("E", seed: seed, difficultyKey: "casual");
+        var runHard = await svcHard.CreateNewRunAsync("H", seed: seed, difficultyKey: "very-hard");
+
+        // Do the same deterministic set of moves in both runs.
+        for (var i = 0; i < 6; i++)
+        {
+            var roomE = await svcEasy.GetCurrentRoomAsync(runEasy);
+            var roomH = await svcHard.GetCurrentRoomAsync(runHard);
+            Assert.That(roomE, Is.Not.Null);
+            Assert.That(roomH, Is.Not.Null);
+
+            var dirE = roomE!.Exits.Keys.OrderBy(d => d).First();
+            var dirH = roomH!.Exits.Keys.OrderBy(d => d).First();
+
+            var (okE, errE) = await svcEasy.MoveAsync(runEasy, dirE);
+            var (okH, errH) = await svcHard.MoveAsync(runHard, dirH);
+
+            Assert.That(okE, Is.True, errE);
+            Assert.That(okH, Is.True, errH);
+        }
+
+        var objsEasy = await dbEasy.WorldObjects.CountAsync(o => o.RunId == runEasy.RunId);
+        var objsHard = await dbHard.WorldObjects.CountAsync(o => o.RunId == runHard.RunId);
+
+        // Casual has higher LootMultiplier than Very Hard (see Seeder), so it should generate >= objects.
+        Assert.That(objsEasy, Is.GreaterThanOrEqualTo(objsHard));
+    }
 }

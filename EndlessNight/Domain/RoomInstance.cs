@@ -1,0 +1,32 @@
+using System;
+using System.Collections.Generic;
+using EndlessNight.Domain.Abstractions;
+
+namespace EndlessNight.Domain;
+
+public sealed class RoomInstance : IRunScoped, INamedEntity
+{
+    public Guid Id { get; set; }
+
+    public Guid RunId { get; set; }
+
+    public required Guid RoomId { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public required string Description { get; set; }
+
+    public Dictionary<Direction, Guid> Exits { get; set; } = new();
+
+    public bool HasBeenSearched { get; set; }
+
+    public List<string> Loot { get; set; } = new();
+
+    public int DangerRating { get; set; }
+
+    public bool TrapTriggered { get; set; }
+
+    // Added grid coordinates for display/debugging
+    public int X { get; set; }
+    public int Y { get; set; }
+}

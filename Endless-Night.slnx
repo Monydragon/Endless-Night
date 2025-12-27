@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EndlessNight/EndlessNight.csproj" />
+  <Project Path="Tests/EndlessNight.Tests/EndlessNight.Tests.csproj" />
+</Solution>

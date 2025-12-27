@@ -1,0 +1,240 @@
+using EndlessNight.Domain;
+using Spectre.Console;
+using Spectre.Console.Rendering;
+
+namespace EndlessNight;
+
+/// <summary>
+/// Dynamic and responsive HUD system for displaying game state
+/// </summary>
+public static class GameHUD
+{
+    public static bool DebugMode { get; set; } = false;
+
+    /// <summary>
+    /// Render the complete HUD with all player and room information
+    /// </summary>
+    public static void RenderFullHUD(RunState run, RoomInstance room, List<WorldObjectInstance>? visibleObjects = null, bool clear = false)
+    {
+        if (clear)
+            AnsiConsole.Clear();
+        
+        // Title (simple centered text, no box)
+        RenderTitle();
+        
+        // Single row: Health | Sanity | Morality
+        RenderStatsRow(run);
+        
+        // Current Room panel with items inside (compact)
+        RenderRoomPanel(room, visibleObjects);
+        
+        // Exits on same line as atmosphere
+        RenderExitsAndAtmosphere(room, run);
+    }
+
+    private static void RenderTitle()
+    {
+        // Use Spectre's Rule instead of manually drawing ───── (prevents broken lines in some terminals)
+        AnsiConsole.Write(new Rule("[bold white]E N D L E S S   N I G H T[/]")
+            .RuleStyle("cyan")
+            .Centered());
+    }
+
+    private static void RenderStatsRow(RunState run)
+    {
+        var healthColor = GetHealthColor(run.Health);
+        var sanityColor = GetSanityColor(run.Sanity);
+        var moralityColor = GetMoralityColor(run.Morality);
+        var moralitySymbol = GetMoralitySymbol(run.Morality);
+
+        var width = ConsoleConfig.GetConsoleWidth();
+        var barWidth = Math.Clamp(width / 18, 8, 18);
+
+        var healthBar = CreateBar(run.Health, 100, barWidth, healthColor);
+        var sanityBar = CreateBar(run.Sanity, 100, barWidth, sanityColor);
+
+        // Keep it one line, tuned for narrow terminals.
+        AnsiConsole.MarkupLine(
+            $"[bold red]HP[/]:{healthBar} [bold {healthColor}]{run.Health}[/]  " +
+            $"[bold magenta]SANITY[/]:{sanityBar} [bold {sanityColor}]{run.Sanity}[/]  " +
+            $"[bold yellow]MORALITY[/]:[boMonyld {moralityColor}]{moralitySymbol}{run.Morality}[/] {GetMoralityDescription(run.Morality)}  " +
+            $"[dim]T:{run.Turn}[/]"
+        );
+    }
+
+    private static void RenderRoomPanel(RoomInstance room, List<WorldObjectInstance>? visibleObjects)
+    {
+        var roomColor = GetDangerColor(room.DangerRating);
+
+        // Build compact room content
+        var lines = new List<string>
+        {
+            $"[bold {roomColor}]{ControllerUI.EscapeMarkup(room.Name)}[/]",
+            $"[grey]{ControllerUI.EscapeMarkup(room.Description)}[/]"
+        };
+
+        if (DebugMode)
+        {
+            var dangerBar = CreateBar(room.DangerRating, 5, 5, roomColor);
+            lines.Add($"[dim]Pos[/]: ({room.X},{room.Y})  [dim]Danger[/]: {dangerBar} [{roomColor}]{room.DangerRating}/5[/]  [dim]Searched[/]: {(room.HasBeenSearched ? "[green]Y[/]" : "[yellow]N[/]")}[/]");
+        }
+
+        // Items in room (compact list, wrap-friendly)
+        if (visibleObjects != null && visibleObjects.Count > 0)
+        {
+            lines.Add("[bold yellow]Items[/]:");
+            foreach (var obj in visibleObjects)
+            {
+                lines.Add($"  {GetObjectIcon(obj.Kind)} [white]{ControllerUI.EscapeMarkup(obj.Name)}[/] [dim]({GetObjectStatus(obj)})[/]");
+            }
+        }
+        else
+        {
+            lines.Add("[dim]Items[/]: none");
+        }
+
+        var panel = new Panel(string.Join("\n", lines))
+        {
+            Header = new PanelHeader("[cyan]ROOM[/]", Justify.Left),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(Color.Cyan),
+            Padding = new Padding(1, 0, 1, 0),
+            Expand = true
+        };
+
+        AnsiConsole.Write(panel);
+    }
+
+    private static void RenderExitsAndAtmosphere(RoomInstance room, RunState run)
+    {
+        var (text, color) = run.Sanity switch
+        {
+            >= 80 => ("You feel oddly confident. LIKE a seasoned adventurer.", "green"),
+            >= 60 => ("You have a strange urge to TYPE: LOOK. The darkness waits.", "yellow"),
+            >= 40 => ("A whisper: \"It is pitch black. You are likely to be eaten by a grue.\"", "cyan"),
+            >= 20 => ("The parser stutters: TAKE LAMP. OPEN DOOR. The grue is near.", "magenta"),
+            _ => ("IT IS PITCH BLACK. You are likely to be eaten by a grue.", "red")
+        };
+
+        var exitsText = room.Exits.Count == 0
+            ? "[red]Exits[/]: none"
+            : $"[white]Exits[/]: {string.Join(" | ", room.Exits.Keys.Select(d => $"[cyan]{d}[/]"))}";
+
+        // Avoid arrow glyphs here too for maximum font compatibility.
+        AnsiConsole.MarkupLine($"{exitsText}  [italic {color}]{text}[/]");
+    }
+
+    private static string CreateBar(int current, int max, int width, string color)
+    {
+        var percentage = (float)current / max;
+        var filledWidth = (int)(width * percentage);
+        var emptyWidth = width - filledWidth;
+        var filled = new string('█', Math.Max(0, filledWidth));
+        var empty = new string('░', Math.Max(0, emptyWidth));
+        return $"[{color}]{filled}[/][dim]{empty}[/]";
+    }
+
+
+    // Helper methods
+    private static string GetHealthColor(int health) => health switch
+    {
+        >= 75 => "green",
+        >= 50 => "yellow",
+        >= 25 => "orange3",
+        _ => "red"
+    };
+
+    private static string GetSanityColor(int sanity) => sanity switch
+    {
+        >= 75 => "green",
+        >= 50 => "cyan",
+        >= 25 => "magenta",
+        _ => "red"
+    };
+
+    private static string GetMoralityColor(int morality) => morality switch
+    {
+        > 0 => "green",
+        < 0 => "red",
+        _ => "grey"
+    };
+
+    private static string GetMoralitySymbol(int morality) => morality switch
+    {
+        > 0 => "↑",
+        < 0 => "↓",
+        _ => "→"
+    };
+
+    private static string GetMoralityDescription(int morality) => morality switch
+    {
+        >= 50 => "[green]Saint[/]",
+        >= 20 => "[green]Good[/]",
+        > 0 => "[yellow]Kind[/]",
+        0 => "[grey]Neutral[/]",
+        > -20 => "[orange3]Harsh[/]",
+        > -50 => "[red]Evil[/]",
+        _ => "[red]Monster[/]"
+    };
+
+    private static string GetDangerColor(int danger) => danger switch
+    {
+        >= 4 => "red",
+        >= 3 => "orange3",
+        >= 2 => "yellow",
+        >= 1 => "cyan",
+        _ => "green"
+    };
+
+    private static string GetObjectIcon(WorldObjectKind kind) => kind switch
+    {
+        WorldObjectKind.Chest => "[yellow]■[/]",
+        WorldObjectKind.Trap => "[red]![/]",
+        WorldObjectKind.PuzzleGate => "[magenta]#[/]",
+        WorldObjectKind.Campfire => "[orange3]*[/]",
+        WorldObjectKind.GroundItem => "[white]•[/]",
+        _ => "[white]•[/]"
+    };
+
+    private static string GetObjectStatus(WorldObjectInstance obj) => obj.Kind switch
+    {
+        WorldObjectKind.Chest => obj.IsOpened ? "[green]Opened[/]" : "[yellow]Locked[/]",
+        WorldObjectKind.Trap => obj.IsDisarmed ? "[green]Disarmed[/]" : "[red]Armed[/]",
+        WorldObjectKind.PuzzleGate => obj.IsSolved ? "[green]Open[/]" : "[yellow]Locked[/]",
+        WorldObjectKind.Campfire => "[cyan]Available[/]",
+        _ => "[white]Usable[/]"
+    };
+
+    private static string GetObjectTypeColor(WorldObjectKind kind) => kind switch
+    {
+        WorldObjectKind.Chest => "yellow",
+        WorldObjectKind.Trap => "red",
+        WorldObjectKind.PuzzleGate => "magenta",
+        WorldObjectKind.Campfire => "orange3",
+        _ => "white"
+    };
+
+    private static string GetDirectionArrow(Direction direction) => direction switch
+    {
+        Direction.North => "↑",
+        Direction.South => "↓",
+        Direction.East => "→",
+        Direction.West => "←",
+        _ => ""
+    };
+
+    /// <summary>
+    /// Show controller hints at the bottom of the screen
+    /// </summary>
+    public static void ShowControllerHints(bool controllerConnected)
+    {
+        if (controllerConnected)
+        {
+            AnsiConsole.MarkupLine("[dim]Controller: [cyan]D-Pad/Left Stick[/] = Navigate | [green]A/X[/] = Select | [red]B/Circle[/] = Back[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[dim]Keyboard: [cyan]Arrow Keys[/] = Navigate | [green]Enter[/] = Select[/]");
+        }
+    }
+}

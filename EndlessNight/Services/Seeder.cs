@@ -261,14 +261,16 @@ public sealed class Seeder
             Tags = new List<string> { "trinket", "clue" }
         }, cancellationToken);
 
-        await UpsertItemDefinitionAsync(new ItemDefinition
-        {
-            Id = Guid.NewGuid(),
-            Key = "rope",
-            Name = "Rope",
-            Description = "A coil of rope. It looks recently cut.",
-            Tags = new List<string> { "tool" }
-        }, cancellationToken);
+        // NOTE: 'rope' is already seeded above as "Coiled Rope"; keep a single stable definition.
+        // (Duplicate key here caused UNIQUE constraint failures in SQLite.)
+        // await UpsertItemDefinitionAsync(new ItemDefinition
+        // {
+        //     Id = Guid.NewGuid(),
+        //     Key = "rope",
+        //     Name = "Rope",
+        //     Description = "A coil of rope. It looks recently cut.",
+        //     Tags = new List<string> { "tool" }
+        // }, cancellationToken);
 
         await UpsertItemDefinitionAsync(new ItemDefinition
         {

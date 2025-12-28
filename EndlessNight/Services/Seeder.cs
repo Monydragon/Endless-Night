@@ -300,6 +300,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 0.60f,
                 NpcSpawnMultiplier = 1.35f,
                 SanityDrainMultiplier = 0.75f,
+                MinDialogueChoices = 3,
+                MaxDialogueChoices = 5,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -327,6 +329,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 0.80f,
                 NpcSpawnMultiplier = 1.20f,
                 SanityDrainMultiplier = 0.9f,
+                MinDialogueChoices = 3,
+                MaxDialogueChoices = 5,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -354,6 +358,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 0.95f,
                 NpcSpawnMultiplier = 1.10f,
                 SanityDrainMultiplier = 1.0f,
+                MinDialogueChoices = 4,
+                MaxDialogueChoices = 6,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -381,6 +387,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 1.0f,
                 NpcSpawnMultiplier = 1.0f,
                 SanityDrainMultiplier = 1.0f,
+                MinDialogueChoices = 5,
+                MaxDialogueChoices = 7,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -409,6 +417,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 1.15f,
                 NpcSpawnMultiplier = 0.95f,
                 SanityDrainMultiplier = 1.15f,
+                MinDialogueChoices = 6,
+                MaxDialogueChoices = 8,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -436,6 +446,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 1.3f,
                 NpcSpawnMultiplier = 0.85f,
                 SanityDrainMultiplier = 1.3f,
+                MinDialogueChoices = 7,
+                MaxDialogueChoices = 9,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -463,6 +475,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 1.45f,
                 NpcSpawnMultiplier = 0.75f,
                 SanityDrainMultiplier = 1.45f,
+                MinDialogueChoices = 8,
+                MaxDialogueChoices = 10,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -490,6 +504,8 @@ public sealed class Seeder
                 EnemySpawnMultiplier = 1.35f,
                 NpcSpawnMultiplier = 0.9f,
                 SanityDrainMultiplier = 1.35f,
+                MinDialogueChoices = 8,
+                MaxDialogueChoices = 10,
                 ActorSpawnChanceOnEntry = 0.25f,
                 ActorSpawnChancePerTurn = 0.25f,
                 ActorMoveChancePerTurn = 0.25f,
@@ -518,6 +534,11 @@ public sealed class Seeder
 
                 // Keep sort order aligned with the intended UI ordering.
                 existing.SortOrder = p.SortOrder;
+
+                // If this is an older DB, fill missing/new dialogue-choice bounds.
+                // We still let players tune these later.
+                if (existing.MinDialogueChoices <= 0) existing.MinDialogueChoices = p.MinDialogueChoices;
+                if (existing.MaxDialogueChoices <= 0) existing.MaxDialogueChoices = p.MaxDialogueChoices;
             }
         }
     }

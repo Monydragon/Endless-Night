@@ -1,6 +1,7 @@
 ﻿using EndlessNight.Domain;
 using EndlessNight.Persistence;
 using EndlessNight.Services;
+using EndlessNight.Services.Feedback;
 using Microsoft.Extensions.Configuration;
 using Spectre.Console;
 
@@ -22,6 +23,12 @@ internal static class Program
         // Initialize controller support
         ControllerUI.InitializeController();
 
+        // Micro-interactions: sound + subtle visuals
+        var feedbackSettings = new FeedbackSettings();
+        configuration.GetSection("Feedback").Bind(feedbackSettings);
+        var feedback = new FeedbackService(feedbackSettings, new NullSoundDevice());
+        ControllerMenu.Feedback = feedback;
+
         AnsiConsole.MarkupLine("[bold yellow]Endless Night[/]");
         AnsiConsole.MarkupLine("[grey]Goal: Find the House's heart and escape the Night.[/]");
 
@@ -30,29 +37,51 @@ internal static class Program
             configuration["Sqlite__ConnectionString"] ??
             "Data Source=endless-night.db";
 
+        // Allow self-healing schema when env var is set (useful after model changes)
+        var resetOnMismatchFromEnv =
+            bool.TryParse(Environment.GetEnvironmentVariable("Sqlite__ResetOnModelMismatch"), out var parsedReset)
+            && parsedReset;
+
         try
         {
-            using var db = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnMismatch: false);
+            using var db = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnMismatch: resetOnMismatchFromEnv);
 
             await new Seeder(db).EnsureSeededAsync();
+
+            // Load persisted settings (and ensure defaults).
+            var settings = new SettingsService(db);
+            await settings.EnsureDefaultsAsync();
+
+            // Pre-load meta-memory state so downstream services can use it later in the run.
+            var metaMemory = await new MetaMemoryService(db).LoadAsync();
 
             var playerName = AnsiConsole.Ask<string>("Enter your [green]player name[/]:").Trim();
             if (string.IsNullOrWhiteSpace(playerName))
                 playerName = "Player";
 
-            var runService = new RunService(db, new ProceduralLevel1Generator());
+            var runService = new RunService(db, new ProceduralLevel1Generator())
+            {
+                MetaMemory = metaMemory
+            };
+
+            // Apply saved debug flag.
+            var debugEnabled = await settings.GetBoolAsync("debug.enabled", defaultValue: false);
+            runService.DebugMode = debugEnabled;
+            GameHUD.DebugMode = debugEnabled;
 
             var run = await SelectOrCreateRunAsync(runService, playerName, sqliteConnectionString);
             if (run is null)
                 return 0;
 
-            await GameLoopAsync(runService, run);
+            await GameLoopAsync(runService, run, feedback);
             return 0;
         }
-        catch (Microsoft.Data.Sqlite.SqliteException sex) when (sex.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        catch (Microsoft.Data.Sqlite.SqliteException sex) when (
+            sex.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase) ||
+            sex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase))
         {
             // Attempt automatic DB recreation and reseed when schema mismatch occurs.
-            AnsiConsole.MarkupLine("[yellow]SQLite reported missing tables. Attempting to recreate the database...[/]");
+            AnsiConsole.MarkupLine("[yellow]SQLite reported a schema problem. Attempting to recreate the database...[/]");
             if (!EndlessNight.Persistence.SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString))
             {
                 AnsiConsole.MarkupLine("[red]Automatic reset failed.[/] You can manually delete the DB file or set env var [grey]Sqlite__ResetOnModelMismatch=true[/].");
@@ -75,8 +104,14 @@ internal static class Program
         }
     }
 
-    private static async Task GameLoopAsync(RunService runService, RunState run)
+    private static async Task GameLoopAsync(RunService runService, RunState run, FeedbackService feedback)
     {
+        // Make run state available for menus that don't get a RunState argument.
+        ControllerMenu.RunStateProvider = () => run;
+
+        var prevHealth = run.Health;
+        var prevSanity = run.Sanity;
+
         while (true)
         {
             var room = await runService.GetCurrentRoomAsync(run);
@@ -85,6 +120,15 @@ internal static class Program
                 AnsiConsole.MarkupLine("[red]The current room vanished. The Night is hungry.[/]");
                 return;
             }
+
+            // If a previous action changed stats, fire micro-interactions before rendering this turn.
+            var deltaHealth = run.Health - prevHealth;
+            var deltaSanity = run.Sanity - prevSanity;
+            if (deltaHealth != 0 || deltaSanity != 0)
+                feedback.StatusDelta(run, deltaHealth, deltaSanity);
+
+            prevHealth = run.Health;
+            prevSanity = run.Sanity;
 
             // Resolve any on-entry traps before showing actions.
             await ResolveEntryTrapsAsync(runService, run);
@@ -95,8 +139,7 @@ internal static class Program
             // Get visible objects for HUD display
             var visibleObjects = await runService.GetVisibleWorldObjectsInCurrentRoomAsync(run);
 
-            // Render the new dynamic HUD
-            GameHUD.RenderFullHUD(run, room, visibleObjects);
+            // Render is handled by the HUD menu surface to prevent duplicated UI.
 
             // Dynamically determine available actions based on room state
             var availableActions = await GetAvailableActionsAsync(runService, run, room);
@@ -111,7 +154,7 @@ internal static class Program
                 { "Encounter", "Spare / pacify enemies" },
                 { "Inventory", "View your collected items" },
                 { "Rest (Campfire)", "Restore health and sanity" },
-                { "Toggle Debug", "Enable/disable debug information" },
+                { "Settings", "Audio, debug, and UI options" },
                 { "Quit", "Exit the game" }
             };
 
@@ -136,15 +179,34 @@ internal static class Program
 
             if (choice == "Toggle Debug")
             {
-                runService.DebugMode = !runService.DebugMode;
-                GameHUD.DebugMode = runService.DebugMode;
-                ControllerUI.ShowSuccess($"Debug {(runService.DebugMode ? "ON" : "OFF")}");
+                // Back-compat: kept for now but routed through Settings.
+                await ToggleDebugAsync(runService);
+                continue;
+            }
+
+            if (choice == "Settings")
+            {
+                await SettingsMenuAsync(runService);
                 continue;
             }
 
             if (choice == "Inventory")
             {
-                await ShowInventoryAsync(runService, run);
+                var inventory = await runService.GetInventoryAsync(run);
+
+                if (inventory.Count == 0)
+                {
+                    ControllerUI.ShowInfo("Your pockets are empty.");
+                    continue;
+                }
+
+                var options = inventory
+                    .Select(i => (option: $"{i.ItemKey} x{i.Quantity}", description: ""))
+                    .ToList();
+                options.Add(("🔙 Back", "Return"));
+
+                // For now this is view-only. Later we can add 'use' actions for consumables.
+                ControllerUI.SelectFromMenuWithDescriptions("INVENTORY", options);
                 continue;
             }
 
@@ -220,11 +282,7 @@ internal static class Program
         }
         ControllerUI.WaitToContinue("Press A/Enter...");
 
-        // If any NPC auto-talk lines were generated this turn, surface them.
-        // Remove direct DB access; RunService provides helper.
-        var autoLines = await runService.GetNpcAutoTalkLinesForCurrentTurnAsync(run);
-        foreach (var msg in autoLines)
-            AnsiConsole.MarkupLine(ControllerUI.EscapeMarkup(msg));
+        // Do not re-print the same lines again; return to the next page.
     }
 
     private static async Task<List<string>> GetAvailableActionsAsync(RunService runService, RunState run, RoomInstance room)
@@ -265,123 +323,148 @@ internal static class Program
             actions.Add("Rest (Campfire)");
         }
 
-        // Debug option
+        // Settings and Quit are always available.
+        actions.Add("Settings");
+
+        // Debug option (legacy quick toggle)
         actions.Add("Toggle Debug");
         actions.Add("Quit");
 
         return actions;
     }
 
-    private static void RenderActionMenu(List<string> actions)
+    private static async Task ToggleDebugAsync(RunService runService)
     {
-        var actionDescriptions = new Dictionary<string, string>
-        {
-            { "Move", "Navigate to an adjacent room" },
-            { "Search Room", "Search for hidden items and triggers" },
-            { "Interact", "Use objects in the room" },
-            { "Inventory", "View your collected items" },
-            { "Rest (Campfire)", "Restore health and sanity" },
-            { "Toggle Debug", "Enable/disable debug information" },
-            { "Quit", "Exit the game" }
-        };
+        runService.DebugMode = !runService.DebugMode;
+        GameHUD.DebugMode = runService.DebugMode;
 
-        AnsiConsole.MarkupLine("[bold cyan]═══════════════════════════════════════════[/]");
-        AnsiConsole.MarkupLine("[bold cyan]AVAILABLE ACTIONS[/]");
-        AnsiConsole.MarkupLine("[bold cyan]═══════════════════════════════════════════[/]");
-        foreach (var action in actions)
+        try
         {
-            if (actionDescriptions.TryGetValue(action, out var desc))
+            await new SettingsService(runService.Db).SetBoolAsync("debug.enabled", runService.DebugMode);
+        }
+        catch
+        {
+            // ignore persistence issues
+        }
+
+        ControllerUI.ShowSuccess($"Debug {(runService.DebugMode ? "ON" : "OFF")}");
+    }
+
+    private static async Task SettingsMenuAsync(RunService runService)
+    {
+        var settings = new SettingsService(runService.Db);
+        await settings.EnsureDefaultsAsync();
+
+        while (true)
+        {
+            var debug = await settings.GetBoolAsync("debug.enabled", defaultValue: false);
+            var slipEnabled = await settings.GetBoolAsync("ui.sanitySlip.enabled", defaultValue: true);
+            var slipThreshold = await settings.GetIntAsync("ui.sanitySlip.threshold", defaultValue: 35);
+            var metaPref = await settings.GetMetaMemoryPreferenceAsync();
+            var voiceProvider = await settings.GetVoiceProviderAsync();
+
+            var options = new List<(string option, string description)>
             {
-                AnsiConsole.MarkupLine($"[cyan]▸ {action}[/] - [dim]{desc}[/]");
+                ($"Debug: {(debug ? "ON" : "OFF")}", "Show debug overlays in HUD/menus"),
+                ($"Sanity Slip Narration: {(slipEnabled ? "ON" : "OFF")}", "Log/trigger sanity-slip narration cues"),
+                ($"Sanity Slip Threshold: {slipThreshold}", "When sanity <= threshold, slip cues may trigger"),
+                ($"Meta Memory: {metaPref.Mode}", "How strongly past runs influence the current one"),
+                ($"Voice Provider: {FormatVoiceProviderLabel(voiceProvider)}", "Choose offline vs optional online narration voices"),
+                ("🔙 Back", "Return")
+            };
+
+            var (picked, _) = ControllerUI.SelectFromMenuWithDescriptions("SETTINGS", options);
+            if (picked == "🔙 Back")
+                return;
+
+            if (picked.StartsWith("Debug:", StringComparison.Ordinal))
+            {
+                debug = !debug;
+                await settings.SetBoolAsync("debug.enabled", debug);
+                runService.DebugMode = debug;
+                GameHUD.DebugMode = debug;
+                continue;
+            }
+
+            if (picked.StartsWith("Sanity Slip Narration:", StringComparison.Ordinal))
+            {
+                slipEnabled = !slipEnabled;
+                await settings.SetBoolAsync("ui.sanitySlip.enabled", slipEnabled);
+                continue;
+            }
+
+            if (picked.StartsWith("Sanity Slip Threshold:", StringComparison.Ordinal))
+            {
+                // Simple stepped selector: 5..60 by 5
+                var values = Enumerable.Range(1, 12).Select(i => i * 5).ToList();
+                var threshOptions = values
+                    .Select(v => (option: v.ToString(), description: v <= 20 ? "Very sensitive" : v <= 35 ? "Default" : "Less frequent"))
+                    .ToList();
+                threshOptions.Add(("Cancel", "Keep current"));
+
+                var (sel, _) = ControllerUI.SelectFromMenuWithDescriptions("Sanity Slip Threshold", threshOptions);
+                if (sel != "Cancel" && int.TryParse(sel, out var parsed))
+                    await settings.SetIntAsync("ui.sanitySlip.threshold", parsed);
+
+                continue;
+            }
+
+            if (picked.StartsWith("Meta Memory:", StringComparison.Ordinal))
+            {
+                var metaOptions = new List<(string option, string description)>
+                {
+                    (MetaMemoryMode.None.ToString(), "No cross-run effects. Pure seed play."),
+                    (MetaMemoryMode.Subtle.ToString(), "Flavor text + mild stat nudge (default)."),
+                    (MetaMemoryMode.Aggressive.ToString(), "Strong consequences: deaths, ghosts, insanity."),
+                    ("Cancel", "Keep current")
+                };
+
+                var (sel, _) = ControllerUI.SelectFromMenuWithDescriptions("META MEMORY", metaOptions);
+                if (sel == "Cancel")
+                    continue;
+
+                if (Enum.TryParse<MetaMemoryMode>(sel, out var newMode))
+                {
+                    await settings.SetMetaMemoryPreferenceAsync(new MetaMemoryPreference { Mode = newMode });
+                }
+
+                continue;
+            }
+
+            if (picked.StartsWith("Voice Provider:", StringComparison.Ordinal))
+            {
+                var providers = new List<(string key, string label, string description)>
+                {
+                    ("offline", "Offline", "Generate voices locally using bundled synth"),
+                    ("optional-online", "Online (Configurable)", "Use a configured online TTS provider when available"),
+                    ("Cancel", "Cancel", "Keep current")
+                };
+
+                var menu = providers.Select(p => (option: p.label, description: p.description)).ToList();
+                var (sel, idx) = ControllerUI.SelectFromMenuWithDescriptions("VOICE PROVIDER", menu);
+                if (sel == "Cancel")
+                    continue;
+
+                var chosen = providers[Math.Clamp(idx, 0, providers.Count - 1)].key;
+                if (chosen != "Cancel")
+                    await settings.SetVoiceProviderAsync(chosen);
+
+                continue;
             }
         }
-        AnsiConsole.MarkupLine("[bold cyan]═══════════════════════════════════════════[/]");
-        AnsiConsole.WriteLine();
     }
 
-    private static async Task ShowInventoryAsync(RunService runService, RunState run)
+    private static string FormatVoiceProviderLabel(string providerKey)
     {
-        AnsiConsole.Clear();
-        AnsiConsole.MarkupLine("[bold cyan]═══════════════════════════════════════════[/]");
-        AnsiConsole.MarkupLine("[bold cyan]INVENTORY[/]");
-        AnsiConsole.MarkupLine("[bold cyan]═══════════════════════════════════════════[/]");
-        
-        var inv = await runService.GetInventoryAsync(run);
-        if (inv.Count == 0)
+        return providerKey switch
         {
-            ControllerUI.ShowInfo("Your pockets are a rumor.");
-        }
-        else
-        {
-            var table = new Table()
-                .Border(TableBorder.Rounded)
-                .AddColumn("[cyan]Item[/]")
-                .AddColumn("[cyan]Qty[/]");
-            foreach (var i in inv)
-                table.AddRow(i.ItemKey, i.Quantity.ToString());
-            AnsiConsole.Write(table);
-        }
-        AnsiConsole.MarkupLine("[bold cyan]═══════════════════════════════════════════[/]");
-        ControllerUI.WaitToContinue();
+            "offline" => "Offline",
+            "optional-online" => "Online (Configurable)",
+            _ => providerKey
+        };
     }
 
-    private static void RenderRoomBanner(RoomInstance room, RunState run)
-    {
-        // Color the room name by danger level
-        var roomColor = room.DangerRating switch
-        {
-            >= 3 => "red",
-            >= 2 => "yellow",
-            >= 1 => "blue",
-            _ => "green"
-        };
-
-        var panel = new Panel(new Markup($"[bold underline {roomColor}]{EscapeMarkup(room.Name)}[/]\n[dim]({room.X}, {room.Y})[/]  [bold orange3]⚠ Danger:[/] [bold {(room.DangerRating >= 2 ? "red" : "yellow")}]{room.DangerRating}[/]"))
-        {
-            Border = BoxBorder.Rounded,
-            Padding = new Padding(1, 1, 1, 1),
-            BorderStyle = new Style(foreground: Color.FromConsoleColor(ConsoleColor.DarkGray))
-        };
-        AnsiConsole.Write(panel);
-
-        // Exposition with atmospheric color based on sanity
-        var sanity = run.Sanity;
-        var line = sanity switch
-        {
-            >= 80 => "[green]The walls behave. Mostly.[/]",
-            >= 60 => "[yellow]Something watches with polite hunger.[/]",
-            >= 40 => "[cyan]Angles disagree about being angles.[/]",
-            >= 20 => "[magenta]You keep seeing doors that won't admit to being doors.[/]",
-            _ => "[bold red]Reality is threadbare here. Your breath draws patterns that don't hold.[/]"
-        };
-        AnsiConsole.MarkupLine(line);
-
-        // Color-coded stats: Health first, then Sanity, then Morality, then Turn
-        var healthColor = run.Health switch
-        {
-            >= 75 => "green",
-            >= 50 => "yellow",
-            >= 25 => "orange3",
-            _ => "red"
-        };
-        var sanityColor = run.Sanity switch
-        {
-            >= 75 => "green",
-            >= 50 => "cyan",
-            >= 25 => "magenta",
-            _ => "red"
-        };
-        var moralityColor = run.Morality switch
-        {
-            > 0 => "green",
-            < 0 => "red",
-            _ => "grey"
-        };
-
-        var moralitySymbol = run.Morality > 0 ? "↑" : run.Morality < 0 ? "↓" : "→";
-        AnsiConsole.MarkupLine($"[bold cyan]❤ Health:[/] [bold {healthColor}]{run.Health}[/]  [bold cyan]⚡ Sanity:[/] [bold {sanityColor}]{run.Sanity}[/]  [bold cyan]⚖ Morality:[/] [bold {moralityColor}]{moralitySymbol} {run.Morality}[/]  [bold cyan]🔄 Turn:[/] [bold white]{run.Turn}[/]");
-    }
-
+    // Remove reflection helper; RunService exposes Db now.
     private static async Task InteractMenuAsync(RunService runService, RunState run)
     {
         var objects = await runService.GetVisibleWorldObjectsInCurrentRoomAsync(run);
@@ -737,58 +820,6 @@ internal static class Program
         Pause();
     }
 
-    // NOTE: Story chapter playback and dialogue encounter loop were prototyped earlier,
-    // but the referenced RunService APIs have since moved. We'll reintroduce these
-    // once the story pipeline is wired back into the current RunService.
-
-    private static IEnumerable<string> GetAvailableActions(RoomInstance room, List<RunInventoryItem> inventory,
-        List<WorldObjectInstance> objects)
-    {
-        yield return "Move";
-        yield return "Search room";
-        if (objects.Count > 0)
-            yield return "Interact";
-        yield return "Inventory";
-        if (inventory.Count > 0)
-            yield return "Use item";
-        yield return "Quit";
-    }
-
-    private static async Task<bool> MoveMenuAsync(RunService runService, RunState run, RoomInstance room)
-    {
-        var dirs = room.Exits.Keys.OrderBy(d => d).Select(d => d.ToString()).ToList();
-        if (dirs.Count == 0)
-        {
-            ControllerUI.ShowInfo("No exits. That feels wrong.");
-            return false;
-        }
-
-        var dirOptions = dirs
-            .Select(d => (option: d, description: $"Move {d}"))
-            .ToList();
-        dirOptions.Add(("🔙 Back", "Return to previous menu"));
-
-        var (pickedDir, _) = ControllerUI.SelectFromMenuWithDescriptions(
-            "CHOOSE DIRECTION",
-            dirOptions
-        );
-
-        if (pickedDir == "🔙 Back")
-            return false;
-
-        if (!Enum.TryParse<Direction>(pickedDir, out var dir))
-            return false;
-
-        var (ok, error) = await runService.MoveAsync(run, dir);
-        if (!ok)
-        {
-            ControllerUI.ShowError(error ?? "You can't.");
-            return false;
-        }
-
-        return true;
-    }
-
 
     private static string GetPercentColor(int value0To100)
     {
@@ -1021,5 +1052,36 @@ internal static class Program
                 continue;
             }
         }
+    }
+
+    private static async Task MoveMenuAsync(RunService runService, RunState run, RoomInstance room)
+    {
+        if (room.Exits.Count == 0)
+        {
+            ControllerUI.ShowError("No exits from this room.");
+            return;
+        }
+
+        var exitOptions = room.Exits
+            .OrderBy(kv => kv.Key)
+            .Select(kv => (
+                option: kv.Key.ToString(),
+                description: kv.Value == Guid.Empty ? "Blocked" : "Path into the dark"
+            ))
+            .ToList();
+        exitOptions.Add(("🔙 Back", "Stay here"));
+
+        var (picked, _) = ControllerUI.SelectFromMenuWithDescriptions("MOVE", exitOptions);
+        if (picked == "🔙 Back")
+            return;
+
+        if (!Enum.TryParse<Direction>(picked, out var direction))
+            return;
+
+        var (ok, error) = await runService.MoveAsync(run, direction);
+        if (ok)
+            ControllerUI.ShowSuccess($"You move {direction}.");
+        else
+            ControllerUI.ShowError(error ?? "You can't go that way.");
     }
 }

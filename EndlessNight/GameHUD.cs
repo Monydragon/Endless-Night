@@ -220,13 +220,8 @@ public static class GameHUD
     /// </summary>
     public static void ShowControllerHints(bool controllerConnected)
     {
-        if (controllerConnected)
-        {
-            AnsiConsole.MarkupLine("[orange3]Controller:[/] [cyan]D-Pad/Left Stick[/] = Navigate | [green]A/X[/] = Select | [red]B/Circle[/] = Back");
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("[orange3]Keyboard:[/] [cyan]Arrow Keys[/] = Navigate | [green]Enter[/] = Select");
-        }
+        // Intentionally no-op.
+        // IDE/scrolling consoles can't truly clear and repeated footers look like duplicated UI.
+        // Contextual prompts are shown within menus and interactions instead.
     }
 }

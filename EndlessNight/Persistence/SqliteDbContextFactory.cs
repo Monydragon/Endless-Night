@@ -51,9 +51,11 @@ public static class SqliteDbContextFactory
         {
             try
             {
-                // Schema probe: hit a column that exists only in newer builds.
-                // If the DB is stale, SQLite will throw "no such column".
+                // Probe for presence of columns introduced in newer builds.
+                // Any failure implies schema mismatch -> rebuild.
                 db.Database.ExecuteSqlRaw("SELECT AutoSpeakOnEnter FROM ActorInstances LIMIT 1;");
+                db.Database.ExecuteSqlRaw("SELECT MaxDialogueChoices FROM DifficultyProfiles LIMIT 1;");
+                db.Database.ExecuteSqlRaw("SELECT MinDialogueChoices FROM DifficultyProfiles LIMIT 1;");
             }
             catch
             {

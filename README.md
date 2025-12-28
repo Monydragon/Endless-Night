@@ -4,6 +4,8 @@ Console adventure/horror game prototype.
 
 ## MongoDB (Docker)
 
+NOTE: MongoDB instructions below are legacy/outdated. Current builds use the local SQLite database file `endless-night.db` by default.
+
 This project is set up to use MongoDB (default connection string: `mongodb://localhost:27017`, database: `endless-night`).
 
 ### Start MongoDB
@@ -63,3 +65,19 @@ Not really in a production sense (MongoDB is a separate server process). Common 
 
 If you want a single-file/local-only database without running a separate server, consider switching to an embedded DB (SQLite/LiteDB). But if you specifically want MongoDB features and scalability, Docker/local server is the right setup.
 
+## Console UI rendering mode
+
+In some IDE consoles (notably JetBrains/Rider Run/Debug), ANSI cursor control is limited, which can cause menu screens to appear stacked.
+
+You can override the menu renderer with an environment variable:
+
+- `ENDLESSNIGHT_MENU_MODE=live`  – use Spectre.Console Live rendering (best in real terminals)
+- `ENDLESSNIGHT_MENU_MODE=clear` – use clear/redraw mode (best in IDE/limited consoles)
+
+In `clear` mode, menus redraw only when input changes (to avoid scroll spam in IDE consoles).
+
+Windows PowerShell example:
+
+- `setx ENDLESSNIGHT_MENU_MODE "clear"`
+
+(You may need to restart the terminal/IDE after setting it.)

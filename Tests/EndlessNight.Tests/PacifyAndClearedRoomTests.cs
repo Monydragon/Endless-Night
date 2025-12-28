@@ -34,11 +34,43 @@ public sealed class PacifyAndClearedRoomTests
         var enemy = await svc.ForceSpawnActorInCurrentRoomAsync(run, ActorKind.Enemy);
         run.Sanity = 100;
 
+        // Game rule: pacify must be unlocked by talking first.
+        // Keep the test deterministic by looping until unlocked (hard-capped).
+        for (int i = 0; i < 80; i++)
+        {
+            var e = (await svc.GetEnemiesInCurrentRoomAsync(run)).FirstOrDefault(x => x.Id == enemy.Id);
+            if (e is not null && e.PacifyUnlocked)
+                break;
+
+            // If the enemy wandered, follow it so we can keep talking.
+            if (e is null)
+            {
+                var tracked = await db.ActorInstances.FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == enemy.Id);
+                Assert.That(tracked, Is.Not.Null);
+                run.CurrentRoomId = tracked!.CurrentRoomId;
+            }
+
+            var (okTalk, _) = await svc.TalkToEnemyForPacifyProgressAsync(run, enemy.Id);
+            Assert.That(okTalk, Is.True);
+        }
+
+        var refreshed = (await svc.GetEnemiesInCurrentRoomAsync(run)).FirstOrDefault(x => x.Id == enemy.Id);
+        Assert.That(refreshed, Is.Not.Null);
+        Assert.That(refreshed!.PacifyUnlocked, Is.True, "Pacify should be unlocked after talking.");
+
         var (ok, msg) = await svc.TryPacifyEnemyAsync(run, enemy.Id);
         Assert.That(ok, Is.True, msg);
 
+        // The specific enemy we pacified should be gone (it is marked IsAlive=false).
+        var enemyRow = await db.ActorInstances.FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == enemy.Id);
+        Assert.That(enemyRow, Is.Not.Null);
+        Assert.That(enemyRow!.IsAlive, Is.False);
+        Assert.That(enemyRow.IsPacified, Is.True);
+
+        // Other enemies may spawn/move during the talk-turn pulses; the core requirement is that
+        // the pacified enemy despawns and the room is marked cleared.
         var enemiesNow = await svc.GetEnemiesInCurrentRoomAsync(run);
-        Assert.That(enemiesNow.Count, Is.EqualTo(0));
+        Assert.That(enemiesNow.Any(e => e.Id == enemy.Id), Is.False);
 
         var room = await svc.GetCurrentRoomAsync(run);
         Assert.That(room, Is.Not.Null);
@@ -108,4 +140,3 @@ public sealed class PacifyAndClearedRoomTests
         Assert.That(totalEnemies, Is.EqualTo(1));
     }
 }
-

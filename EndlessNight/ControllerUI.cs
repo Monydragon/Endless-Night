@@ -57,6 +57,9 @@ public static class ControllerUI
     /// </summary>
     public static ControllerInput? GetController() => _controller;
 
+    // NOTE: Menu pages are rendered by ControllerMenu using a Live surface.
+    // Do not write/clear extra lines here, otherwise pages can stack/duplicate.
+
     /// <summary>
     /// Select from a list of objects with a custom display function
     /// </summary>
@@ -110,6 +113,7 @@ public static class ControllerUI
         RoomInstance room,
         List<WorldObjectInstance>? visibleObjects = null)
     {
+        // HUD pages don't show the global hints line here; the HUD itself is the header.
         var selectedIndex = ControllerMenu.ShowMenuWithHUD(title, options, run, room, visibleObjects);
         
         if (selectedIndex < 0 || selectedIndex >= options.Count)
@@ -315,3 +319,4 @@ public static class ControllerUI
     }
 }
 
+// NOTE: (sync) minor change to refresh IDE snapshot

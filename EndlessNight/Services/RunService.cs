@@ -10,6 +10,8 @@ public sealed partial class RunService
 {
     // ...existing code...
 
+    internal SqliteDbContext Db => _db;
+
     public async Task<WorldObjectInstance?> GetPendingEntryTrapAsync(RunState run, CancellationToken cancellationToken = default)
     {
         // Only traps that trigger on entry and haven't been resolved.
@@ -104,6 +106,8 @@ public sealed partial class RunService
 
     // Debug flag: can be toggled by Program via property
     public bool DebugMode { get; set; }
+
+    public MetaMemoryState? MetaMemory { get; set; }
 
     public RunService(SqliteDbContext db, ProceduralLevel1Generator generator)
     {
@@ -1408,6 +1412,67 @@ public sealed partial class RunService
         return new Guid(bytes);
     }
 
+    private static int ClampDialogueMin(int value) => Math.Clamp(value, 3, 10);
+    private static int ClampDialogueMax(int value) => Math.Clamp(value, 3, 10);
+
+    private static readonly string[] FallbackDialogueChoices =
+    {
+        "Ask what they want.",
+        "Study them in silence.",
+        "Change the subject.",
+        "Try to leave politely.",
+        "Lie: pretend you understand.",
+        "Admit fear.",
+        "Offer a trade.",
+        "Threaten softly.",
+        "Laugh it off.",
+        "Say nothing. Let the pause speak."
+    };
+
+    private async Task MaybeLogSanitySlipAsync(RunState run, int beforeSanity, int afterSanity, string sourceEventType,
+        CancellationToken cancellationToken)
+    {
+        // This is just a hook. UI can read these logs later or show immediately.
+        // We keep it deterministic (no RNG here) and reasonably sparse.
+        try
+        {
+            var settings = new SettingsService(_db);
+            var enabled = await settings.GetBoolAsync("ui.sanitySlip.enabled", defaultValue: true, cancellationToken);
+            if (!enabled) return;
+
+            var threshold = await settings.GetIntAsync("ui.sanitySlip.threshold", defaultValue: 35, cancellationToken);
+            threshold = Math.Clamp(threshold, 1, 99);
+
+            if (afterSanity > threshold && beforeSanity > threshold)
+                return;
+
+            // Log when crossing into the slip zone OR on a big single drop.
+            var crossed = beforeSanity > threshold && afterSanity <= threshold;
+            var bigDrop = (beforeSanity - afterSanity) >= 12;
+
+            if (!crossed && !bigDrop)
+                return;
+
+            _db.RoomEventLogs.Add(new RoomEventLog
+            {
+                Id = Guid.NewGuid(),
+                RunId = run.RunId,
+                Turn = run.Turn,
+                EventType = "sanity.slip",
+                Message = crossed
+                    ? "Something in you loosens. The world stops agreeing with itself."
+                    : "Your thoughts skid. For a second you forget the shape of your own fear.",
+                CreatedUtc = DateTime.UtcNow
+            });
+
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            // never block gameplay
+        }
+    }
+
     public async Task<(EndlessNight.Domain.Dialogue.DialogueNode? node, List<EndlessNight.Domain.Dialogue.DialogueChoice> choices, string? error)>
         GetDialogueAsync(RunState run, Guid actorId, CancellationToken cancellationToken = default)
     {
@@ -1434,6 +1499,64 @@ public sealed partial class RunService
         // Apply requirement gates.
         choices = choices.Where(c => IsChoiceAvailable(run, c)).ToList();
 
+        // Enforce difficulty min/max and deterministic variety.
+        var diff = await new DifficultyService(_db).GetOrDefaultAsync(run.DifficultyKey, cancellationToken);
+        var min = ClampDialogueMin(diff.MinDialogueChoices);
+        var max = ClampDialogueMax(diff.MaxDialogueChoices);
+        if (max < min)
+            max = min;
+
+        (min, max) = ApplyMetaMemoryToChoiceRange(min, max);
+
+        // Trim if too many (keep deterministic subset).
+        if (choices.Count > max)
+        {
+            var rng = new Random(HashCode.Combine(run.Seed, run.Turn, actorId.GetHashCode(), state.CurrentNodeKey.GetHashCode(), 99071));
+            choices = choices
+                .OrderBy(_ => rng.Next())
+                .Take(max)
+                .OrderBy(c => c.Text)
+                .ToList();
+        }
+
+        // Backfill if too few by adding safe synthetic choices.
+        if (choices.Count < min)
+        {
+            var needed = min - choices.Count;
+            var rng = new Random(HashCode.Combine(run.Seed, run.Turn, actorId.GetHashCode(), state.CurrentNodeKey.GetHashCode(), 77331));
+
+            // Avoid duplicates against existing choice text.
+            var used = new HashSet<string>(choices.Select(c => c.Text), StringComparer.Ordinal);
+
+            var picks = FallbackDialogueChoices
+                .OrderBy(_ => rng.Next())
+                .Where(t => !used.Contains(t))
+                .Take(needed)
+                .ToList();
+
+            foreach (var text in picks)
+            {
+                // Synthetic choices intentionally have mild/random-free effects.
+                var synthetic = new DialogueChoice
+                {
+                    Id = Guid.Empty,
+                    FromNodeKey = state.CurrentNodeKey,
+                    Text = text,
+                    ToNodeKey = state.CurrentNodeKey,
+                    SanityDelta = 0,
+                    HealthDelta = 0,
+                    MoralityDelta = 0,
+                    GrantItemKey = null,
+                    GrantItemQuantity = 0,
+                    PacifyTarget = false,
+                    RevealDisposition = null
+                };
+                choices.Add(synthetic);
+            }
+
+            choices = choices.OrderBy(c => c.Text).ToList();
+        }
+
         return (node, choices, null);
     }
 
@@ -1454,6 +1577,8 @@ public sealed partial class RunService
 
         if (!IsChoiceAvailable(run, choice))
             return (false, "You can't choose that right now.");
+
+        var beforeSanity = run.Sanity;
 
         // Apply deterministic consequences.
         run.Sanity += choice.SanityDelta;
@@ -1505,6 +1630,11 @@ public sealed partial class RunService
 
             _db.ActorInstances.Update(actor);
         }
+
+        // Clamp stats and log sanity slip if needed.
+        var afterSanity = Math.Clamp(run.Sanity, 0, 100);
+        ClampRunStats(run);
+        await MaybeLogSanitySlipAsync(run, beforeSanity, afterSanity, sourceEventType: "dialogue.choose", cancellationToken);
 
         // Advance or end.
         if (string.IsNullOrWhiteSpace(choice.ToNodeKey))
@@ -1766,6 +1896,27 @@ public sealed partial class RunService
         catch
         {
             // Never block gameplay on procedural dialogue.
+        }
+    }
+
+    private (int min, int max) ApplyMetaMemoryToChoiceRange(int min, int max)
+    {
+        if (MetaMemory is null)
+            return (min, max);
+
+        switch (MetaMemory.Mode)
+        {
+            case MetaMemoryMode.None:
+                return (min, max);
+            case MetaMemoryMode.Subtle:
+                var subtleMin = Math.Max(3, min + 1);
+                return (subtleMin, Math.Max(subtleMin, max));
+            case MetaMemoryMode.Aggressive:
+                var aggressiveMin = Math.Max(3, min + 2);
+                var aggressiveMax = Math.Max(aggressiveMin, Math.Min(10, max + 1));
+                return (aggressiveMin, aggressiveMax);
+            default:
+                return (min, max);
         }
     }
 }

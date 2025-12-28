@@ -54,6 +54,13 @@ public sealed class DifficultyProfile : IEntity
     public float SanityDrainMultiplier { get; set; } = 1.0f;
 
     /// <summary>
+    /// Dialogue response variety bounds. Always clamped to 3..10 by the engine.
+    /// </summary>
+    public int MinDialogueChoices { get; set; } = 5;
+
+    public int MaxDialogueChoices { get; set; } = 8;
+
+    /// <summary>
     /// Encounter spawning schedule knobs.
     /// 0..1 probabilities.
     /// </summary>

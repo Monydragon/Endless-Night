@@ -52,6 +52,11 @@ public sealed class SqliteDbContext : DbContext
     // Per-run configuration
     public DbSet<RunConfig> RunConfigs => Set<RunConfig>();
 
+    // Global settings + world/run memory
+    public DbSet<GameSetting> GameSettings => Set<GameSetting>();
+    public DbSet<RunFlag> RunFlags => Set<RunFlag>();
+    public DbSet<WorldFlag> WorldFlags => Set<WorldFlag>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // MapDefinition
@@ -231,14 +236,26 @@ public sealed class SqliteDbContext : DbContext
             .Property(x => x.EnabledLorePacks)
             .HasConversion(new StringListJsonConverter());
 
-        // LoreWord
-        modelBuilder.Entity<LoreWord>().HasKey(x => x.Id);
-        modelBuilder.Entity<LoreWord>()
+        // GameSetting (global)
+        modelBuilder.Entity<GameSetting>().HasKey(x => x.Id);
+        modelBuilder.Entity<GameSetting>()
             .Property(x => x.Id)
             .ValueGeneratedNever();
-        modelBuilder.Entity<LoreWord>().HasIndex(x => x.Key).IsUnique();
-        modelBuilder.Entity<LoreWord>().HasIndex(x => x.PackKey);
-        modelBuilder.Entity<LoreWord>().HasIndex(x => x.Category);
+        modelBuilder.Entity<GameSetting>().HasIndex(x => x.Key).IsUnique();
+
+        // RunFlag (per-run memory)
+        modelBuilder.Entity<RunFlag>().HasKey(x => x.Id);
+        modelBuilder.Entity<RunFlag>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<RunFlag>().HasIndex(x => new { x.RunId, x.ScopeType, x.ScopeId, x.Key }).IsUnique();
+
+        // WorldFlag (cross-run memory)
+        modelBuilder.Entity<WorldFlag>().HasKey(x => x.Id);
+        modelBuilder.Entity<WorldFlag>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+        modelBuilder.Entity<WorldFlag>().HasIndex(x => x.Key).IsUnique();
 
         base.OnModelCreating(modelBuilder);
     }

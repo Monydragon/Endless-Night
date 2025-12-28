@@ -32,7 +32,7 @@ internal static class Program
 
         try
         {
-            using var db = SqliteDbContextFactory.Create(configuration);
+            using var db = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnMismatch: false);
 
             await new Seeder(db).EnsureSeededAsync();
 
@@ -53,14 +53,14 @@ internal static class Program
         {
             // Attempt automatic DB recreation and reseed when schema mismatch occurs.
             AnsiConsole.MarkupLine("[yellow]SQLite reported missing tables. Attempting to recreate the database...[/]");
-            if (!SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString))
+            if (!EndlessNight.Persistence.SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString))
             {
                 AnsiConsole.MarkupLine("[red]Automatic reset failed.[/] You can manually delete the DB file or set env var [grey]Sqlite__ResetOnModelMismatch=true[/].");
                 return 1;
             }
 
-            using var db2 = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnModelMismatch: false);
-            await new Seeder(db2).EnsureSeededAsync();
+            using var db = EndlessNight.Persistence.SqliteDbContextFactory.Create(sqliteConnectionString, resetOnMismatch: true);
+            await new Seeder(db).EnsureSeededAsync();
             AnsiConsole.MarkupLine("[green]Database recreated and seeded.[/]");
             return 0;
         }
@@ -88,6 +88,9 @@ internal static class Program
 
             // Resolve any on-entry traps before showing actions.
             await ResolveEntryTrapsAsync(runService, run);
+
+            // Let NPCs auto-speak (if configured) after traps, before the action menu.
+            await ShowNpcAutoTalkOnEntryAsync(runService, run);
 
             // Get visible objects for HUD display
             var visibleObjects = await runService.GetVisibleWorldObjectsInCurrentRoomAsync(run);
@@ -198,6 +201,30 @@ internal static class Program
                 continue;
             }
         }
+    }
+
+    private static async Task ShowNpcAutoTalkOnEntryAsync(RunService runService, RunState run)
+    {
+        // Pull any npc.auto events for the current turn and show them like a short cutscene.
+        // We keep it non-blocking: if there are none, it does nothing.
+        var lines = await runService.GetNpcAutoTalkLinesForCurrentTurnAsync(run);
+        if (lines.Count == 0)
+            return;
+
+        AnsiConsole.Clear();
+        AnsiConsole.MarkupLine("[bold cyan]VOICES IN THE ROOM[/]");
+        AnsiConsole.WriteLine();
+        foreach (var line in lines)
+        {
+            AnsiConsole.MarkupLine($"[grey]•[/] {ControllerUI.EscapeMarkup(line)}");
+        }
+        ControllerUI.WaitToContinue("Press A/Enter...");
+
+        // If any NPC auto-talk lines were generated this turn, surface them.
+        // Remove direct DB access; RunService provides helper.
+        var autoLines = await runService.GetNpcAutoTalkLinesForCurrentTurnAsync(run);
+        foreach (var msg in autoLines)
+            AnsiConsole.MarkupLine(ControllerUI.EscapeMarkup(msg));
     }
 
     private static async Task<List<string>> GetAvailableActionsAsync(RunService runService, RunState run, RoomInstance room)
@@ -448,7 +475,7 @@ internal static class Program
                 if (!confirm)
                     continue;
 
-                if (!SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString))
+                if (!EndlessNight.Persistence.SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString))
                 {
                     AnsiConsole.MarkupLine("[red]Could not reset the DB.[/] Only simple 'Data Source=...' connection strings are supported.");
                     Pause();
@@ -466,14 +493,14 @@ internal static class Program
                 if (!confirm)
                     continue;
 
-                if (!SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString))
+                if (!EndlessNight.Persistence.SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString))
                 {
                     AnsiConsole.MarkupLine("[red]Could not reset the DB.[/] Only simple 'Data Source=...' connection strings are supported.");
                     Pause();
                     continue;
                 }
 
-                using var db = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnModelMismatch: false);
+                using var db = EndlessNight.Persistence.SqliteDbContextFactory.Create(sqliteConnectionString, resetOnMismatch: true);
                 await new Seeder(db).EnsureSeededAsync();
                 AnsiConsole.MarkupLine("[green]Database recreated and seeded.[/]");
                 Pause();
@@ -533,25 +560,46 @@ internal static class Program
         // Difficulty selection (simple version)
         // IMPORTANT: use the same configured DB file and reset-on-mismatch behavior,
         // otherwise an older DB file will throw "no such column" for newly added fields.
-        var resetOnMismatch =
+        var resetOnMismatchFromEnv =
             bool.TryParse(Environment.GetEnvironmentVariable("Sqlite__ResetOnModelMismatch"), out var parsed) && parsed;
 
-        using var dbTmp = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnModelMismatch: resetOnMismatch);
-        await new Seeder(dbTmp).EnsureSeededAsync();
+#if DEBUG
+        // In debug builds, prefer self-healing DB behavior to speed iteration.
+        var resetOnMismatch = resetOnMismatchFromEnv || true;
+#else
+        var resetOnMismatch = resetOnMismatchFromEnv;
+#endif
 
-        var diffService = new DifficultyService(dbTmp);
-        var profiles = await diffService.GetAllAsync();
+        SqliteDbContext dbTmp;
+        try
+        {
+            dbTmp = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnMismatch: resetOnMismatch);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException sex) when (sex.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase))
+        {
+            // Stale schema: rebuild it now.
+            SqliteDbContextFactory.TryResetDatabase(sqliteConnectionString);
+            dbTmp = SqliteDbContextFactory.Create(sqliteConnectionString, resetOnMismatch: true);
+        }
 
-        var options = profiles
-            .Select(p => (
-                option: p.Name,
-                description: string.IsNullOrWhiteSpace(p.Description) ? p.Key : $"{p.Description} (key: {p.Key})"))
-            .ToList();
+        using (dbTmp)
+        {
+            await new Seeder(dbTmp).EnsureSeededAsync();
 
-        var (_, idx) = ControllerUI.SelectFromMenuWithDescriptions("Select Difficulty", options);
-        var selected = profiles[Math.Clamp(idx, 0, profiles.Count - 1)];
+            var diffService = new DifficultyService(dbTmp);
+            var profiles = await diffService.GetAllAsync();
 
-        return await runService.CreateNewRunAsync(playerName, seed, selected.Key);
+            var options = profiles
+                .Select(p => (
+                    option: p.Name,
+                    description: string.IsNullOrWhiteSpace(p.Description) ? p.Key : $"{p.Description} (key: {p.Key})"))
+                .ToList();
+
+            var (_, idx) = ControllerUI.SelectFromMenuWithDescriptions("Select Difficulty", options);
+            var selected = profiles[Math.Clamp(idx, 0, profiles.Count - 1)];
+
+            return await runService.CreateNewRunAsync(playerName, seed, selected.Key);
+        }
     }
 
     private static async Task RunTestLabAsync(RunService runService, RunState run)
@@ -890,24 +938,88 @@ internal static class Program
             return;
         }
 
-        var options = new List<(string option, string description)>();
-        foreach (var e in enemies)
-        {
-            var cost = await runService.GetPacifySanityCostAsync(run, e);
-            options.Add(($"Pacify: {e.Name}", $"Sanity -{cost} (Intensity {e.Intensity})"));
-        }
+        // One enemy at a time for now: pick which enemy to engage.
+        var enemyOptions = enemies
+            .Select(e => (
+                option: $"{e.Name}",
+                description: $"Intensity {e.Intensity} | Pacify {(e.PacifyUnlocked ? "Unlocked" : $"Locked ({e.PacifyProgress}%)")}"))
+            .ToList();
+        enemyOptions.Add(("🔙 Back", "Return"));
 
-        options.Add(("🔙 Back", "Return"));
-
-        var (picked, idx) = ControllerUI.SelectFromMenuWithDescriptions("ENCOUNTER", options);
-        if (picked == "🔙 Back")
+        var (pickedEnemy, enemyIdx) = ControllerUI.SelectFromMenuWithDescriptions("ENEMY", enemyOptions);
+        if (pickedEnemy == "🔙 Back")
             return;
 
-        var enemy = enemies[Math.Clamp(idx, 0, enemies.Count - 1)];
-        var (ok, msg) = await runService.TryPacifyEnemyAsync(run, enemy.Id);
-        if (ok)
-            ControllerUI.ShowSuccess(msg);
-        else
-            ControllerUI.ShowError(msg);
+        var enemy = enemies[Math.Clamp(enemyIdx, 0, enemies.Count - 1)];
+
+        while (true)
+        {
+            var pacifyUnlocked = await runService.IsPacifyUnlockedAsync(run, enemy.Id);
+            var cost = await runService.GetPacifySanityCostAsync(run, enemy);
+
+            var options = new List<(string option, string description)>
+            {
+                ("Talk", "Try to understand it. Required to unlock Pacify."),
+                ("Run", "Retreat. You might get followed."),
+                (pacifyUnlocked ? $"Pacify (Sanity -{cost})" : "Pacify (Locked)", pacifyUnlocked ? "Spend sanity to spare it." : "You must talk to unlock this option."),
+                ("🔙 Back", "Return")
+            };
+
+            var (picked, _) = ControllerUI.SelectFromMenuWithDescriptions($"ENCOUNTER: {enemy.Name}", options);
+
+            if (picked == "🔙 Back")
+                return;
+
+            if (picked == "Run")
+            {
+                // Simple flee: pick the first available exit (deterministic) and move.
+                var room = await runService.GetCurrentRoomAsync(run);
+                if (room is null || room.Exits.Count == 0)
+                {
+                    ControllerUI.ShowError("No way out.");
+                    continue;
+                }
+
+                var dir = room.Exits.Keys.OrderBy(d => d).First();
+                var (ok, err) = await runService.MoveAsync(run, dir);
+                if (!ok)
+                    ControllerUI.ShowError(err ?? "You can't run.");
+                else
+                    ControllerUI.ShowInfo($"You run {dir}.");
+
+                return;
+            }
+
+            if (picked.StartsWith("Pacify", StringComparison.OrdinalIgnoreCase))
+            {
+                var (ok, msg) = await runService.TryPacifyEnemyAsync(run, enemy.Id);
+                if (ok)
+                {
+                    ControllerUI.ShowSuccess(msg);
+                    return;
+                }
+
+                ControllerUI.ShowError(msg);
+                continue;
+            }
+
+            if (picked == "Talk")
+            {
+                var (ok, msg) = await runService.TalkToEnemyForPacifyProgressAsync(run, enemy.Id);
+                if (ok)
+                    ControllerUI.ShowInfo(msg);
+                else
+                    ControllerUI.ShowError(msg);
+
+                // Refresh the local enemy snapshot.
+                var refreshed = (await runService.GetEnemiesInCurrentRoomAsync(run)).FirstOrDefault(e => e.Id == enemy.Id);
+                if (refreshed is not null)
+                    enemy = refreshed;
+                else
+                    return;
+
+                continue;
+            }
+        }
     }
 }

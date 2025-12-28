@@ -62,4 +62,31 @@ public sealed class ActorInstance : IEnemy, INpc
     public bool IsPacified { get; set; }
 
     public bool IsAlive { get; set; } = true;
+
+    /// <summary>
+    /// Stable ordering index for room-entry auto dialogue. Lower speaks first.
+    /// </summary>
+    public int SpawnIndex { get; set; }
+
+    /// <summary>
+    /// If true, this actor may speak automatically when the player enters their room.
+    /// Primarily used for NPCs.
+    /// </summary>
+    public bool AutoSpeakOnEnter { get; set; }
+
+    /// <summary>
+    /// 0 = simple (short phrases), 1 = normal, 2 = advanced (full conversation).
+    /// For enemies, simple is typical unless they're "advanced".
+    /// </summary>
+    public int SpeechLevel { get; set; }
+
+    /// <summary>
+    /// Enemy-only: tracks progress toward unlocking pacify through conversation.
+    /// </summary>
+    public int PacifyProgress { get; set; }
+
+    /// <summary>
+    /// Enemy-only: whether pacify has been unlocked via dialogue.
+    /// </summary>
+    public bool PacifyUnlocked { get; set; }
 }

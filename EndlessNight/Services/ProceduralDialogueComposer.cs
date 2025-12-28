@@ -167,6 +167,7 @@ public sealed class ProceduralDialogueComposer
         return tags
             .Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(t => t.Length > 0)
+            .Select(t => t.Trim())
             .ToList();
     }
 

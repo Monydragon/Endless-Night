@@ -197,6 +197,87 @@ public sealed class Seeder
             Description = "A small charm shaped like a blue heart. It thrums faintly.",
             Tags = new List<string> { "artifact", "lore", "undertale" }
         }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "matches",
+            Name = "Matches",
+            Description = "A small box of matches. Some are missing. All of them smell like rain.",
+            Tags = new List<string> { "consumable", "light", "tool" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "candle",
+            Name = "Candle",
+            Description = "A stub of wax. The wick looks pre-burned, like it remembers future fires.",
+            Tags = new List<string> { "consumable", "light" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "salt",
+            Name = "Salt Pouch",
+            Description = "A pouch of coarse salt. It makes the air feel honest.",
+            Tags = new List<string> { "consumable", "tool", "ward" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "herbal-tea",
+            Name = "Herbal Tea",
+            Description = "A paper packet of dried herbs. The scent makes your thoughts slow down.",
+            Tags = new List<string> { "consumable", "sanity" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "stimulant",
+            Name = "Bitter Stimulant",
+            Description = "A tiny vial of bitter drops. Your heart speeds up. Your fear follows.",
+            Tags = new List<string> { "consumable", "speed" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "mirror-shard",
+            Name = "Mirror Shard",
+            Description = "A jagged shard of mirror. It reflects you a fraction of a second late.",
+            Tags = new List<string> { "artifact", "clue" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "lucky-coin",
+            Name = "Lucky Coin",
+            Description = "A coin with a second face scratched into it. It feels warmer in your palm than it should.",
+            Tags = new List<string> { "trinket", "clue" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "rope",
+            Name = "Rope",
+            Description = "A coil of rope. It looks recently cut.",
+            Tags = new List<string> { "tool" }
+        }, cancellationToken);
+
+        await UpsertItemDefinitionAsync(new ItemDefinition
+        {
+            Id = Guid.NewGuid(),
+            Key = "lockpick",
+            Name = "Lockpick",
+            Description = "A thin pick and tension wrench. Someone made them from something personal.",
+            Tags = new List<string> { "tool", "key" }
+        }, cancellationToken);
     }
 
     private async Task SeedDifficultyProfilesAsync(CancellationToken cancellationToken)
@@ -788,6 +869,136 @@ public sealed class Seeder
                 Weight = 9,
                 MaxSanity = 35,
                 Text = "You laugh once, quietly. The sound doesn't match the room."
+            },
+
+            // NPC auto-speak / ambient chatter
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "npc.auto.001",
+                Role = "opening",
+                Tags = "npc;auto;encounter",
+                Weight = 10,
+                Text = "\"Don't stare at the corners, {player}. They learn your face.\""
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "npc.auto.002",
+                Role = "opening",
+                Tags = "npc;auto;encounter",
+                Weight = 9,
+                Text = "\"If you hear your name behind you, don't answer.\""
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "npc.auto.003",
+                Role = "opening",
+                Tags = "npc;auto;encounter",
+                Weight = 7,
+                Text = "The stranger speaks without looking at you: \"Count your breaths. Forget your steps.\""
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "npc.auto.highSanity.001",
+                Role = "opening",
+                Tags = "npc;auto;encounter",
+                Weight = 5,
+                MinSanity = 70,
+                Text = "\"You're doing better than most. Keep your light close.\""
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "npc.auto.lowSanity.001",
+                Role = "opening",
+                Tags = "npc;auto;encounter",
+                Weight = 12,
+                MaxSanity = 35,
+                Text = "\"You're shaking. Here—look at me. Not the walls. The walls lie.\""
+            },
+
+            // Enemy talk (simple)
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.simple.001",
+                Role = "middle",
+                Tags = "enemy;encounter",
+                Weight = 8,
+                Text = "It tilts its head. \"Hungry.\""
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.simple.002",
+                Role = "middle",
+                Tags = "enemy;encounter",
+                Weight = 7,
+                Text = "\"Noise. Stop.\" It points at your chest like it's accusing your heart."
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.simple.003",
+                Role = "middle",
+                Tags = "enemy;encounter",
+                Weight = 6,
+                Text = "It repeats a word it doesn't understand: \"Mercy?\""
+            },
+
+            // Enemy talk (advanced)
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.advanced.001",
+                Role = "middle",
+                Tags = "enemy;encounter",
+                Weight = 7,
+                Text = "\"You're not the first to bargain with the dark. You're just the first today.\""
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.advanced.lowMorality.001",
+                Role = "middle",
+                Tags = "enemy;encounter",
+                Weight = 9,
+                MaxMorality = -10,
+                Text = "\"You pretend you're kind. I can smell your shortcuts.\""
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.advanced.highMorality.001",
+                Role = "middle",
+                Tags = "enemy;encounter",
+                Weight = 9,
+                MinMorality = 10,
+                Text = "\"You're trying. That's rare here. Rare things get hunted.\""
+            },
+
+            // Pacify flavor lines
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.pacify.hint.001",
+                Role = "closing",
+                Tags = "enemy;pacify;hint",
+                Weight = 10,
+                Text = "Its posture changes—less attack, more question. You're getting through."
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                Key = "enemy.pacify.hint.lowSanity.001",
+                Role = "closing",
+                Tags = "enemy;pacify;hint",
+                Weight = 10,
+                MaxSanity = 40,
+                Text = "Your thoughts slip, but your voice lands. The thing hesitates anyway."
             },
         };
 

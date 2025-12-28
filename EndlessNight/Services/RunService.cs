@@ -98,56 +98,7 @@ public sealed partial class RunService
         var cost = (int)MathF.Ceiling(baseCost * mult * (float)intensityFactor);
         return Math.Clamp(cost, 0, 100);
     }
-
-    public async Task<(bool ok, string message)> TryPacifyEnemyAsync(RunState run, Guid enemyId, CancellationToken cancellationToken = default)
-    {
-        var enemy = await _db.ActorInstances.FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == enemyId, cancellationToken);
-        if (enemy is null || enemy.Kind != ActorKind.Enemy || !enemy.IsAlive)
-            return (false, "That enemy isn't here.");
-
-        if (enemy.CurrentRoomId != run.CurrentRoomId)
-            return (false, "It's not in this room.");
-
-        var cost = await GetPacifySanityCostAsync(run, enemy, cancellationToken);
-        if (run.Sanity < cost)
-            return (false, $"You can't focus enough (need {cost} sanity). ");
-
-        run.Sanity = Math.Max(0, run.Sanity - cost);
-
-        // Despawn: mark not alive and pacified.
-        enemy.IsPacified = true;
-        enemy.IsAlive = false;
-        _db.ActorInstances.Update(enemy);
-
-        // Remove active dialogue state so it doesn't linger.
-        var state = await _db.RunDialogueStates.FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == enemy.Id, cancellationToken);
-        if (state is not null)
-            _db.RunDialogueStates.Remove(state);
-
-        // Mark room as cleared (prevents new enemy spawns here).
-        var room = await _db.RoomInstances.FirstOrDefaultAsync(r => r.RunId == run.RunId && r.RoomId == run.CurrentRoomId, cancellationToken);
-        if (room is not null)
-        {
-            room.IsCleared = true;
-            _db.RoomInstances.Update(room);
-        }
-
-        _db.RoomEventLogs.Add(new RoomEventLog
-        {
-            Id = Guid.NewGuid(),
-            RunId = run.RunId,
-            Turn = run.Turn,
-            ActorId = enemy.Id,
-            EventType = "enemy.pacify",
-            Message = $"You reach for mercy. The {enemy.Name} relents and fades (Sanity -{cost}).",
-            CreatedUtc = DateTime.UtcNow
-        });
-
-        await _db.SaveChangesAsync(cancellationToken);
-        await SaveRunAsync(run, cancellationToken);
-        return (true, $"Pacified {enemy.Name} (Sanity -{cost}).");
-    }
-
+    
     private readonly SqliteDbContext _db;
     private readonly ProceduralLevel1Generator _generator;
 
@@ -441,6 +392,9 @@ public sealed partial class RunService
 
         // On-entry encounter chance (difficulty-driven).
         await TriggerRoomEntryEncounterAsync(run, cancellationToken);
+
+        // If NPCs are present, they may speak automatically on entry (in SpawnIndex order).
+        await TriggerNpcAutoSpeakOnEntryAsync(run, cancellationToken);
 
         // Sanity drift based on danger (scaled by difficulty + depth)
         var nextRoom = await GetCurrentRoomAsync(run, cancellationToken);
@@ -813,7 +767,8 @@ public sealed partial class RunService
     {
         return await _db.ActorInstances
             .Where(a => a.RunId == run.RunId && a.CurrentRoomId == run.CurrentRoomId && a.IsAlive)
-            .OrderBy(a => a.Kind)
+            .OrderBy(a => a.SpawnIndex)
+            .ThenBy(a => a.Kind)
             .ThenBy(a => a.Name)
             .ToListAsync(cancellationToken);
     }
@@ -823,8 +778,227 @@ public sealed partial class RunService
         return await _db.ActorInstances
             .Where(a => a.RunId == run.RunId && a.CurrentRoomId == run.CurrentRoomId)
             .Where(a => a.IsAlive && a.Kind == ActorKind.Enemy)
-            .OrderBy(a => a.Name)
+            .OrderBy(a => a.SpawnIndex)
+            .ThenBy(a => a.Name)
             .ToListAsync(cancellationToken);
+    }
+
+    public async Task<List<ActorInstance>> GetNpcsInCurrentRoomAsync(RunState run, CancellationToken cancellationToken = default)
+    {
+        return await _db.ActorInstances
+            .Where(a => a.RunId == run.RunId && a.CurrentRoomId == run.CurrentRoomId)
+            .Where(a => a.IsAlive && a.Kind == ActorKind.Npc)
+            .OrderBy(a => a.SpawnIndex)
+            .ThenBy(a => a.Name)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task TriggerNpcAutoSpeakOnEntryAsync(RunState run, CancellationToken cancellationToken = default)
+    {
+        var npcs = await GetNpcsInCurrentRoomAsync(run, cancellationToken);
+        if (npcs.Count == 0)
+            return;
+
+        // Per requirements: when configured, NPCs will speak in order of their index.
+        // "Configured" = AutoSpeakOnEnter. We still allow a small chance for ambient chatter.
+        var cfg = await _db.RunConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.RunId == run.RunId, cancellationToken);
+        var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>);
+
+        var room = await GetCurrentRoomAsync(run, cancellationToken);
+        var rng = new Random(HashCode.Combine(run.Seed, run.Turn, run.CurrentRoomId.GetHashCode(), 50501));
+
+        foreach (var npc in npcs)
+        {
+            var shouldSpeak = npc.AutoSpeakOnEnter || rng.NextDouble() < 0.15; // small ambient chance
+            if (!shouldSpeak)
+                continue;
+
+            // Ensure dialogue state exists
+            var state = await _db.RunDialogueStates.FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == npc.Id, cancellationToken);
+            if (state is null)
+            {
+                state = new RunDialogueState
+                {
+                    Id = Guid.NewGuid(),
+                    RunId = run.RunId,
+                    ActorId = npc.Id,
+                    CurrentNodeKey = "encounter.stranger.1",
+                    ConversationPhase = "opening",
+                    UpdatedUtc = DateTime.UtcNow
+                };
+                _db.RunDialogueStates.Add(state);
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+
+            // Compose one procedural line and log it as "npc.auto".
+            var contextTags = new List<string> { "npc", "auto", "encounter" };
+            if (room?.RoomTags is not null) contextTags.AddRange(room.RoomTags);
+
+            var composer = new ProceduralDialogueComposer(_db);
+            var composed = await composer.ComposeAsync(new ProceduralDialogueComposer.ComposeRequest(
+                RunId: run.RunId,
+                Seed: run.Seed,
+                Turn: run.Turn,
+                PlayerName: run.PlayerName,
+                RoomName: room?.Name ?? "",
+                EnabledLorePacks: enabledPacks,
+                ContextTags: contextTags,
+                Sanity: run.Sanity,
+                Morality: run.Morality,
+                Disposition: npc.Disposition,
+                MaxLines: 1,
+                SeedOffset: cfg?.DialogueSeedOffset,
+                Phase: "opening"
+            ), cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(composed.Text))
+                continue;
+
+            _db.RoomEventLogs.Add(new RoomEventLog
+            {
+                Id = Guid.NewGuid(),
+                RunId = run.RunId,
+                ActorId = npc.Id,
+                Turn = run.Turn,
+                EventType = "npc.auto",
+                Message = composed.Text,
+                CreatedUtc = DateTime.UtcNow
+            });
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<bool> IsPacifyUnlockedAsync(RunState run, Guid enemyId, CancellationToken cancellationToken = default)
+    {
+        var enemy = await _db.ActorInstances.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == enemyId, cancellationToken);
+        if (enemy is null || enemy.Kind != ActorKind.Enemy || !enemy.IsAlive)
+            return false;
+        return enemy.PacifyUnlocked;
+    }
+
+    public async Task<(bool ok, string message)> TalkToEnemyForPacifyProgressAsync(RunState run, Guid enemyId,
+        CancellationToken cancellationToken = default)
+    {
+        var enemy = await _db.ActorInstances.FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == enemyId, cancellationToken);
+        if (enemy is null || enemy.Kind != ActorKind.Enemy || !enemy.IsAlive)
+            return (false, "That enemy isn't here.");
+
+        if (enemy.CurrentRoomId != run.CurrentRoomId)
+            return (false, "It's not in this room.");
+
+        // Talking costs a tiny amount of time (turn pulse) but not necessarily sanity.
+        // It does progress toward pacify.
+        var rng = new Random(HashCode.Combine(run.Seed, run.Turn, enemy.Id.GetHashCode(), 91919));
+
+        // Increase progress more if the enemy is "simple" or less intense.
+        var speech = Math.Clamp(enemy.SpeechLevel, 0, 2);
+        var intensity01 = Math.Clamp(enemy.Intensity / 100.0, 0.0, 1.0);
+        var baseGain = speech == 0 ? 45 : speech == 1 ? 35 : 25;
+        var gain = (int)Math.Round(baseGain * (1.0 - intensity01 * 0.35) + rng.Next(0, 6));
+
+        enemy.PacifyProgress = Math.Clamp(enemy.PacifyProgress + gain, 0, 100);
+        if (!enemy.PacifyUnlocked && enemy.PacifyProgress >= 100)
+        {
+            enemy.PacifyUnlocked = true;
+            enemy.Disposition = ActorDisposition.Friendly;
+
+            _db.RoomEventLogs.Add(new RoomEventLog
+            {
+                Id = Guid.NewGuid(),
+                RunId = run.RunId,
+                ActorId = enemy.Id,
+                Turn = run.Turn,
+                EventType = "enemy.pacify.unlock",
+                Message = $"You find the right rhythm. {enemy.Name} hesitates — you might be able to calm it.",
+                CreatedUtc = DateTime.UtcNow
+            });
+        }
+
+        _db.ActorInstances.Update(enemy);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        // One procedural "talk" line for flavor.
+        var state = await _db.RunDialogueStates.FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == enemy.Id, cancellationToken);
+        if (state is null)
+        {
+            state = new RunDialogueState
+            {
+                Id = Guid.NewGuid(),
+                RunId = run.RunId,
+                ActorId = enemy.Id,
+                CurrentNodeKey = "encounter.stranger.1",
+                ConversationPhase = "opening",
+                UpdatedUtc = DateTime.UtcNow
+            };
+            _db.RunDialogueStates.Add(state);
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
+        // Tag enemy talk by complexity so the composer can pick appropriate snippet pools.
+        // (This is non-LLM and deterministic, but feels more alive due to variety.)
+        await TryComposeProceduralDialogueAsync(run, enemy, state, cancellationToken);
+
+        // Talking consumes a turn to keep pressure on.
+        await AdvanceTurnAsync(run, "enemy.talk", cancellationToken);
+
+        if (enemy.PacifyUnlocked)
+            return (true, "You talk it down enough to see a path to mercy. (Pacify unlocked)");
+
+        return (true, $"You speak carefully. Something shifts. (Pacify {enemy.PacifyProgress}% )");
+    }
+
+    public async Task<(bool ok, string message)> TryPacifyEnemyAsync(RunState run, Guid enemyId, CancellationToken cancellationToken = default)
+    {
+        var enemy = await _db.ActorInstances.FirstOrDefaultAsync(a => a.RunId == run.RunId && a.Id == enemyId, cancellationToken);
+        if (enemy is null || enemy.Kind != ActorKind.Enemy || !enemy.IsAlive)
+            return (false, "That enemy isn't here.");
+
+        if (enemy.CurrentRoomId != run.CurrentRoomId)
+            return (false, "It's not in this room.");
+
+        if (!enemy.PacifyUnlocked)
+            return (false, "You don't know what to say yet. Try talking to it.");
+
+        var cost = await GetPacifySanityCostAsync(run, enemy, cancellationToken);
+        if (run.Sanity < cost)
+            return (false, $"You can't focus enough (need {cost} sanity). ");
+
+        run.Sanity = Math.Max(0, run.Sanity - cost);
+
+        // Despawn: mark not alive and pacified.
+        enemy.IsPacified = true;
+        enemy.IsAlive = false;
+        _db.ActorInstances.Update(enemy);
+
+        // Remove active dialogue state so it doesn't linger.
+        var state = await _db.RunDialogueStates.FirstOrDefaultAsync(s => s.RunId == run.RunId && s.ActorId == enemy.Id, cancellationToken);
+        if (state is not null)
+            _db.RunDialogueStates.Remove(state);
+
+        // Mark room as cleared (prevents new enemy spawns here).
+        var room = await _db.RoomInstances.FirstOrDefaultAsync(r => r.RunId == run.RunId && r.RoomId == run.CurrentRoomId, cancellationToken);
+        if (room is not null)
+        {
+            room.IsCleared = true;
+            _db.RoomInstances.Update(room);
+        }
+
+        _db.RoomEventLogs.Add(new RoomEventLog
+        {
+            Id = Guid.NewGuid(),
+            RunId = run.RunId,
+            Turn = run.Turn,
+            ActorId = enemy.Id,
+            EventType = "enemy.pacify",
+            Message = $"You reach for mercy. The {enemy.Name} relents and fades (Sanity -{cost}).",
+            CreatedUtc = DateTime.UtcNow
+        });
+
+        await _db.SaveChangesAsync(cancellationToken);
+        await SaveRunAsync(run, cancellationToken);
+        return (true, $"Pacified {enemy.Name} (Sanity -{cost}).");
     }
 
     /// <summary>
@@ -903,7 +1077,13 @@ public sealed partial class RunService
             Disposition = ActorDisposition.Unknown,
             IsHostile = false,
             IsPacified = false,
-            IsAlive = true
+            IsAlive = true,
+            // New defaults
+            SpawnIndex = rng.Next(1, 10_000),
+            AutoSpeakOnEnter = rng.NextDouble() < 0.20,
+            SpeechLevel = rng.NextDouble() < 0.20 ? 2 : 1,
+            PacifyProgress = 0,
+            PacifyUnlocked = true
         };
     }
 
@@ -913,6 +1093,9 @@ public sealed partial class RunService
         {
             "Stranger", "Hollow", "Watcher", "Pale Thing", "Shade", "Grinning Silence"
         };
+
+        // Speech level: most enemies are simple; a few are advanced.
+        var advanced = rng.NextDouble() < 0.18;
 
         return new ActorInstance
         {
@@ -927,7 +1110,13 @@ public sealed partial class RunService
             Disposition = ActorDisposition.Unknown,
             IsHostile = rng.NextDouble() < 0.65,
             IsPacified = false,
-            IsAlive = true
+            IsAlive = true,
+            // New defaults
+            SpawnIndex = rng.Next(1, 10_000),
+            AutoSpeakOnEnter = false,
+            SpeechLevel = advanced ? 2 : 0,
+            PacifyProgress = 0,
+            PacifyUnlocked = false
         };
     }
 
@@ -1358,6 +1547,16 @@ public sealed partial class RunService
         return msg;
     }
 
+    public async Task<List<string>> GetNpcAutoTalkLinesForCurrentTurnAsync(RunState run, CancellationToken cancellationToken = default)
+    {
+        return await _db.RoomEventLogs
+            .AsNoTracking()
+            .Where(e => e.RunId == run.RunId && e.Turn == run.Turn && e.EventType == "npc.auto")
+            .OrderBy(e => e.CreatedUtc)
+            .Select(e => e.Message)
+            .ToListAsync(cancellationToken);
+    }
+
     private async Task TryMoveActorsOnceAsync(RunState run, Random rng, CancellationToken cancellationToken)
     {
         var actors = await _db.ActorInstances
@@ -1499,10 +1698,24 @@ public sealed partial class RunService
         try
         {
             var cfg = await _db.RunConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.RunId == run.RunId, cancellationToken);
-            var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>());
+            var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>);
 
             var ctxRoom = await GetCurrentRoomAsync(run, cancellationToken);
             var contextTags = new List<string> { "encounter" };
+
+            // Add actor-kind tags so snippets can target NPC/enemy differently.
+            if (actor.Kind == ActorKind.Npc)
+            {
+                contextTags.Add("npc");
+                if (actor.AutoSpeakOnEnter) contextTags.Add("auto");
+            }
+            else
+            {
+                contextTags.Add("enemy");
+                contextTags.Add(actor.SpeechLevel >= 2 ? "advanced" : "simple");
+                if (!actor.PacifyUnlocked) contextTags.Add("pacify");
+            }
+
             if (ctxRoom?.RoomTags is not null) contextTags.AddRange(ctxRoom.RoomTags);
 
             var currentPhase = string.IsNullOrWhiteSpace(state.ConversationPhase) ? "opening" : state.ConversationPhase;

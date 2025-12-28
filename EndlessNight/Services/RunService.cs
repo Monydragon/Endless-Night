@@ -802,7 +802,7 @@ public sealed partial class RunService
         // Per requirements: when configured, NPCs will speak in order of their index.
         // "Configured" = AutoSpeakOnEnter. We still allow a small chance for ambient chatter.
         var cfg = await _db.RunConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.RunId == run.RunId, cancellationToken);
-        var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>);
+        var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>());
 
         var room = await GetCurrentRoomAsync(run, cancellationToken);
         var rng = new Random(HashCode.Combine(run.Seed, run.Turn, run.CurrentRoomId.GetHashCode(), 50501));
@@ -1698,7 +1698,7 @@ public sealed partial class RunService
         try
         {
             var cfg = await _db.RunConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.RunId == run.RunId, cancellationToken);
-            var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>);
+            var enabledPacks = (IReadOnlyList<string>)(cfg?.EnabledLorePacks ?? new List<string>());
 
             var ctxRoom = await GetCurrentRoomAsync(run, cancellationToken);
             var contextTags = new List<string> { "encounter" };
